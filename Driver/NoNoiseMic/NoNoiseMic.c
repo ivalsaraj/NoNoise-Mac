@@ -362,6 +362,7 @@ static OSStatus NoNoiseMic_GetPropertyData(AudioServerPlugInDriverRef inDriver, 
                 if (inQualifierDataSize != sizeof(CFStringRef) || inQualifierData == NULL) return kAudioHardwareIllegalOperationError;
                 if (inDataSize < sizeof(AudioObjectID)) return kAudioHardwareBadPropertySizeError;
                 CFStringRef uid = *(const CFStringRef *)inQualifierData;
+                if (uid == NULL) return kAudioHardwareIllegalOperationError; // don't CFEqual a NULL qualifier
                 AudioObjectID match = kAudioObjectUnknown;
                 if (CFEqual(uid, kDeviceUID_Mic))         match = kObjectID_Device_Mic;
                 else if (CFEqual(uid, kDeviceUID_Engine)) match = kObjectID_Device_Engine;
