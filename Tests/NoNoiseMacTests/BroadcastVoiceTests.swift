@@ -113,6 +113,119 @@ final class BroadcastVoiceTests: XCTestCase {
                                  "presence lift stays gentle to preserve the original voice")
     }
 
+    // MARK: - VoiceChain integration
+
+    /// Disabled polish + clarity off = passthrough (regression: existing Meeting behavior).
+    func testChainOffWithClarityOffIsPassthrough() {
+        let chain = VoiceChain()
+        var s = VoiceChainSettings.disabled
+        s.clarity = .off
+        chain.configure(s)
+        var buf: [Float] = [0.1, -0.2, 0.3, -0.4]
+        let copy = buf
+        buf.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+        XCTAssertEqual(buf, copy, "off+off must not modify samples")
+    }
+
+    /// Clarity active with polish OFF (e.g. Meeting) still processes (presence engages).
+    func testClarityActiveWithPolishOff() {
+        let chain = VoiceChain()
+        var s = VoiceChainSettings.disabled        // enabled == false
+        s.clarity = .high
+        chain.configure(s)
+        XCTAssertTrue(chain.isActive)
+        var buf = [Float](repeating: 0.0, count: 9600)
+        for i in 0..<buf.count { buf[i] = 0.3 * sinf(2 * Float.pi * 4500 * Float(i) / 48000) }
+        let before = buf
+        buf.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+        XCTAssertFalse(zip(buf, before).allSatisfy { abs($0 - $1) < 1e-4 },
+                       "clarity must shape a presence-band signal even with polish off")
+    }
+
+    /// Higher clarity ⇒ more presence-band energy (monotonic effect through the chain).
+    func testHigherClarityLiftsPresenceBandMore() {
+        func presenceRMS(_ level: ClarityLevel) -> Float {
+            let chain = VoiceChain()
+            var s = VoiceChainSettings.disabled
+            s.clarity = level
+            chain.configure(s)
+            var buf = [Float](repeating: 0, count: 9600)
+            for i in 0..<buf.count { buf[i] = 0.2 * sinf(2 * Float.pi * 4500 * Float(i) / 48000) }
+            buf.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+            var sq: Float = 0
+            for i in 4800..<buf.count { sq += buf[i] * buf[i] }
+            return sqrtf(sq / 4800)
+        }
+        XCTAssertGreaterThan(presenceRMS(.high), presenceRMS(.medium))
+        XCTAssertGreaterThan(presenceRMS(.medium), presenceRMS(.low))
+    }
+
+    /// Re-activation resets stage state (no stale ringing leaks in).
+    func testChainResetsOnReactivateWithClarity() {
+        let chain = VoiceChain()
+        var on = VoiceChainSettings.disabled
+        on.clarity = .high
+        chain.configure(on)
+        var loud = [Float](repeating: 0.9, count: 4800)
+        loud.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+        chain.configure(.disabled)                 // inactive (state frozen)
+        chain.configure(on)                        // active again → reset()
+        var quiet = [Float](repeating: 0, count: 64)
+        quiet.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+        XCTAssertTrue(quiet.allSatisfy { abs($0) < 1e-3 }, "re-activation must start clean")
+    }
+
+    /// Off→On (and level changes) while the chain stays active must reset the clarity stages.
+    /// Isolated by keeping polish OFF (enabled=false) so only presence+de-esser+limiter run —
+    /// no polish ringing to confound the silence assertion.
+    func testClarityChangeResetsStagesWhileActive() {
+        let chain = VoiceChain()
+        var s = VoiceChainSettings.disabled   // polish OFF; chain active via clarity only
+        s.clarity = .high
+        chain.configure(s)
+        // Energize the clarity stages with a loud sibilant-rich burst.
+        var burst = [Float](repeating: 0, count: 4800)
+        for i in 0..<burst.count { burst[i] = 0.9 * sinf(2 * Float.pi * 7000 * Float(i) / 48000) }
+        burst.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+        // Change clarity level while still active (high→low): must reset the clarity stages.
+        s.clarity = .low
+        chain.configure(s)
+        // Silence in → no stale presence/de-esser ringing may leak (only clarity stages run here).
+        var quiet = [Float](repeating: 0, count: 128)
+        quiet.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+        XCTAssertTrue(quiet.allSatisfy { abs($0) < 1e-4 },
+                      "clarity stages must reset on change — no stale ringing")
+    }
+
+    /// Clarity = Off must leave an enabled (polish-on) preset bit-identical to the canonical
+    /// hp→lowShelf→highShelf→compressor→limiter chain — proving Broadcast Voice Off is a true no-op.
+    func testClarityOffMatchesCanonicalPolishChain() {
+        let s = VoicePreset.podcast.voiceChain        // clarity defaults to .off
+        let chain = VoiceChain()
+        chain.configure(s)
+        // Reference: the same primitives in the legacy order, with NO presence/de-esser stages.
+        var hp = Biquad(), lo = Biquad(), hi = Biquad()
+        var comp = Compressor(); var lim = Limiter()
+        hp.setHighPass(freq: s.highPassHz, sampleRate: 48000)
+        lo.setLowShelf(freq: s.lowShelfHz, gainDb: s.lowShelfDb, sampleRate: 48000)
+        hi.setHighShelf(freq: s.highShelfHz, gainDb: s.highShelfDb, sampleRate: 48000)
+        comp.configure(thresholdDb: s.compThresholdDb, ratio: s.compRatio, attackMs: s.compAttackMs,
+                       releaseMs: s.compReleaseMs, makeupDb: s.compMakeupDb, sampleRate: 48000)
+        lim.configure(ceilingDb: s.limiterCeilingDb, releaseMs: 50, sampleRate: 48000)
+        var buf = [Float](repeating: 0, count: 4800)
+        for i in 0..<buf.count { buf[i] = 0.3 * sinf(2 * Float.pi * 220 * Float(i) / 48000) }
+        var ref = buf
+        buf.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+        for i in 0..<ref.count {
+            var x = ref[i]
+            x = hp.process(x); x = lo.process(x); x = hi.process(x); x = comp.process(x); x = lim.process(x)
+            ref[i] = x
+        }
+        for i in 0..<buf.count {
+            XCTAssertEqual(buf[i], ref[i], accuracy: 1e-6, "clarity Off must equal the canonical chain @\(i)")
+        }
+    }
+
     // MARK: - Helpers
 
     /// Drive a steady sine through a biquad; return input/steady-state output RMS
