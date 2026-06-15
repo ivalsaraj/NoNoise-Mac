@@ -1209,3 +1209,17 @@ The headless suite does not exercise the live audio path or SwiftUI. After imple
 - **TDD granularity:** Tasks 1 and 2 follow strict red → green → commit TDD. Tasks 3 and 5 are `swift build`-verified (cannot unit-test `AudioModel` or SwiftUI headlessly — matches the precedent set by the broadcast voice plan's Task 5 and Task 6). Task 4 adds pure serialization and insertion-order round-trip regression tests — it does NOT claim to test `AudioModel.applyProfile` (which requires a live CoreAudio engine); that path is verified exclusively by the manual smoke test.
 - **Extensibility:** the three future fields (`lufsTarget`, `normalizationEnabled`, `deplosiveLevel`, `declickLevel`) are documented with commented-out stubs in `VoiceProfile.swift` and the decision is captured in `knowledge1.md`.
 - **No placeholder code:** every step shows complete, copy-pasteable implementations.
+
+---
+
+## Post-Implementation Amendments
+
+Captured during the post-implementation Codex code review (gpt-5.5), so this plan stays a learning artifact.
+
+### Amendment 1 — Task 3 Step 4 load placement was a plan gap (IMPORTANT, fixed)
+
+- **Gap:** Step 4 instructed adding the `mv.profiles` decode *at the end of `loadSettings()`, after `applyVoiceChain()`*. But `loadSettings()` has an early `return` when `mv.preset` is absent (the first-launch/default path). The decode therefore never ran on that path.
+- **Why it matters:** `saveCurrentAsProfile` persists ONLY `mv.profiles` (via `persistProfiles()`); it never writes `mv.preset`. A user who saved a profile from the default state (no `mv.preset` yet) had `mv.profiles` but no `mv.preset`, so on relaunch the early return skipped the decode and the saved profile silently disappeared from the UI (data was intact in `UserDefaults`, just not loaded).
+- **Root cause (why the plan missed it):** the plan treated profile-loading as part of the normal settings-restore flow, not accounting for `mv.profiles` being persisted independently of the Tier 1 keys.
+- **Fix applied:** the decode now runs at the TOP of `loadSettings()`, before the `guard let raw = d.string(forKey: PrefKey.preset)` early return, so profiles load on every launch path. Captured as a `[GOTCHA]` in `docs/knowledge/knowledge1.md`.
+- **Rule for future plans:** load independently-persisted collections before any other key's early-return; never gate one persistence key's read behind another key's presence.
