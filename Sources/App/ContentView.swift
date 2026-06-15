@@ -10,6 +10,7 @@ struct ContentView: View {
             header
             statusCard
             modeCard
+            clarityCard
             devicesCard
             driverStatusRow
             footer
@@ -98,6 +99,22 @@ struct ContentView: View {
             Picker("", selection: $audioModel.selectedPreset) {
                 ForEach(VoicePreset.allCases) { preset in
                     Text(preset.label).tag(preset)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+        }
+        .nnCard()
+    }
+
+    // MARK: - Broadcast Voice (clarity)
+
+    private var clarityCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            cardLabel("Broadcast Voice", systemImage: "waveform.path.ecg")
+            Picker("", selection: $audioModel.clarityLevel) {
+                ForEach(ClarityLevel.allCases) { level in
+                    Text(level.label).tag(level)
                 }
             }
             .labelsHidden()
