@@ -31,6 +31,14 @@
 
 ---
 
+## 🎥 Demo
+
+https://github.com/user-attachments/assets/a6cc5011-7551-4e68-9326-1426c2367936
+
+> Real noise in, studio voice out — in real time, 100% on-device.
+
+---
+
 ## 🎯 What is NoNoise Mac?
 
 NoNoise Mac is a lightweight **menu-bar app** that cleans your microphone in real time using
