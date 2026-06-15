@@ -109,6 +109,17 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         }
     }
 
+    /// "Broadcast Voice" clarity level. Layered on top of the active preset
+    /// (independent of the noise preset and of Voice Polish). Guarded like the
+    /// other knobs so `loadSettings` can restore it without re-persisting mid-load.
+    @Published public var clarityLevel: ClarityLevel = .off {
+        didSet {
+            guard !isApplyingPreset else { return }
+            applyVoiceChain()
+            persistSettings()
+        }
+    }
+
     private var isApplyingPreset = false
 
     private enum PrefKey {
@@ -117,6 +128,7 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         static let atten = "mv.attenuationLimitDb"
         static let gain = "mv.outputGain"
         static let voicePolish = "mv.voicePolish"
+        static let clarity = "mv.clarity"
     }
 
     public struct DeviceStruct: Identifiable {
@@ -244,6 +256,7 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     private func applyVoiceChain() {
         var s = selectedPreset.voiceChain
         s.enabled = s.enabled && voicePolishEnabled
+        s.clarity = clarityLevel
         voiceChain.configure(s)
     }
 
@@ -267,6 +280,7 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         d.set(attenuationLimitDb, forKey: PrefKey.atten)
         d.set(outputGainValue, forKey: PrefKey.gain)
         d.set(voicePolishEnabled, forKey: PrefKey.voicePolish)
+        d.set(clarityLevel.rawValue, forKey: PrefKey.clarity)
     }
 
     private func loadSettings() {
@@ -287,6 +301,7 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         // Restore the master toggle inside the guard so its didSet doesn't
         // re-persist or reconfigure mid-load (default ON when absent).
         voicePolishEnabled = d.object(forKey: PrefKey.voicePolish) as? Bool ?? true
+        clarityLevel = ClarityLevel(rawValue: d.string(forKey: PrefKey.clarity) ?? "") ?? .off
         selectedPreset = preset
         isApplyingPreset = false
         if let p = preset.parameters {  // non-custom: preset defines the values
