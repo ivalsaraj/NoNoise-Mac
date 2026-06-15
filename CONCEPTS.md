@@ -68,3 +68,25 @@ docs, and reviews.
 - **Biquad** — RBJ-cookbook second-order IIR filter (TDF-II).
 - **Compressor** — log-domain feed-forward dynamics (threshold/ratio/attack/release/makeup).
 - **Limiter** — fast peak limiter + hard clamp; the final overflow guard (ceiling dB).
+
+## Metering & loudness (Tier 2)
+- **Telemetry** — lock-free scalars written on the render/DSP threads and read by the
+  shared ~25 Hz UI timer (`AudioModel.publishMeterTelemetry`, the same timer Smart Level
+  uses) — the suppression-knob atomic-scalar pattern, reversed; no locks. The
+  `LoudnessMeter` struct is mutated only on the render thread and snapshotted into
+  scalars (`tMomentaryLUFS` / `tIntegratedLUFS`) — it is never read cross-thread.
+- **AI activity** — a smoothed 0…1 "AI working hard" signal = energy-weighted average
+  per-bin suppression (`1 − wetMag/dryMag`) from the DSP blend. A UX hint, not a model
+  quality metric; reads 0 when noise cancellation is off.
+- **LUFS (`LoudnessMeter`)** — real ITU-R BS.1770 K-weighted loudness (the standard's
+  published 48 kHz two-stage filter, not an approximation). Momentary (400 ms) is the
+  live needle; integrated is gated (absolute −70 LUFS + relative −10 LU) using a
+  fixed-size block ring (no unbounded history, no render-path allocation).
+- **Loudness normalization** — optional slew-limited make-up gain toward a target
+  (−14 / −16 LUFS), applied pre-limiter in the voice chain; OFF by default. Works even
+  with polish/clarity off (the chain activates for `loudnessActive` so the limiter runs).
+- **Peak / clip** — v1 tracks **sample-peak** + an output-clip warning (reuses the
+  Smart Level output-clip signal), NOT oversampled true-peak; the normalization ceiling
+  is the voice-chain limiter (≈ −1 dBFS; −0.5 in Tutorial), not certified dBTP.
+- **Output telemetry runs whenever audio flows** (like Smart Level's), so the output
+  meter/LUFS are live in passthrough too; AI activity is the only AI-gated readout.

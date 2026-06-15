@@ -18,7 +18,9 @@ final class VoiceProfileTests: XCTestCase {
             clarityLevel: .medium,
             mouthNoiseLevel: .high,
             inputVolumeValue: 0.65,
-            smartLevelEnabled: true
+            smartLevelEnabled: true,
+            loudnessNormEnabled: true,
+            loudnessTargetLUFS: -16
         )
         let data = try VoiceProfile.encoder.encode(profile)
         let decoded = try VoiceProfile.decoder.decode(VoiceProfile.self, from: data)
@@ -33,6 +35,8 @@ final class VoiceProfileTests: XCTestCase {
         XCTAssertEqual(decoded.mouthNoiseLevel, profile.mouthNoiseLevel)
         XCTAssertEqual(decoded.inputVolumeValue ?? 0, profile.inputVolumeValue ?? 0, accuracy: 1e-6)
         XCTAssertEqual(decoded.smartLevelEnabled, profile.smartLevelEnabled)
+        XCTAssertEqual(decoded.loudnessNormEnabled, profile.loudnessNormEnabled)
+        XCTAssertEqual(decoded.loudnessTargetLufs ?? 0, profile.loudnessTargetLufs ?? 0, accuracy: 1e-6)
         XCTAssertEqual(decoded.version, 1)
     }
 
@@ -55,6 +59,8 @@ final class VoiceProfileTests: XCTestCase {
           "mouth_noise_level": "medium",
           "input_volume_value": 0.75,
           "smart_level_enabled": true,
+          "loudness_norm_enabled": true,
+          "loudness_target_lufs": -16.0,
           "lufs_target": -16.0,
           "normalization_enabled": true
         }
@@ -65,6 +71,8 @@ final class VoiceProfileTests: XCTestCase {
         XCTAssertEqual(decoded.mouthNoiseLevel, .medium)
         XCTAssertEqual(decoded.inputVolumeValue ?? 0, 0.75, accuracy: 1e-6)
         XCTAssertEqual(decoded.smartLevelEnabled, true)
+        XCTAssertEqual(decoded.loudnessNormEnabled, true)
+        XCTAssertEqual(decoded.loudnessTargetLufs ?? 0, -16, accuracy: 1e-6)
     }
 
     // MARK: - Extensibility: missing optional future fields default gracefully
@@ -93,6 +101,8 @@ final class VoiceProfileTests: XCTestCase {
         XCTAssertNil(decoded.mouthNoiseLevel)
         XCTAssertNil(decoded.inputVolumeValue)
         XCTAssertNil(decoded.smartLevelEnabled)
+        XCTAssertNil(decoded.loudnessNormEnabled)
+        XCTAssertNil(decoded.loudnessTargetLufs)
         XCTAssertEqual(decoded.version, 1)
     }
 
@@ -270,7 +280,9 @@ final class VoiceProfileTests: XCTestCase {
             clarityLevel: .high,
             mouthNoiseLevel: .low,
             inputVolumeValue: 0.5,
-            smartLevelEnabled: false
+            smartLevelEnabled: false,
+            loudnessNormEnabled: true,
+            loudnessTargetLUFS: -14
         )
         var store = VoiceProfileStore()
         store.save(profile)
@@ -284,6 +296,9 @@ final class VoiceProfileTests: XCTestCase {
         XCTAssertEqual(r.clarityLevel, profile.clarityLevel)
         XCTAssertEqual(r.mouthNoiseLevel, profile.mouthNoiseLevel)
         XCTAssertEqual(r.inputVolumeValue ?? 0, profile.inputVolumeValue ?? 0, accuracy: 1e-6)
+        XCTAssertEqual(r.smartLevelEnabled, profile.smartLevelEnabled)
+        XCTAssertEqual(r.loudnessNormEnabled, profile.loudnessNormEnabled)
+        XCTAssertEqual(r.loudnessTargetLufs ?? 0, profile.loudnessTargetLufs ?? 0, accuracy: 1e-6)
         XCTAssertEqual(r.smartLevelEnabled, profile.smartLevelEnabled)
         XCTAssertEqual(r.preset, profile.preset)
     }

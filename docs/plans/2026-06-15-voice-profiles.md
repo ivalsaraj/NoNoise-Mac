@@ -6,7 +6,7 @@
 
 **Architecture:** A `VoiceProfile` Codable struct (versioned, tolerant of unknown fields) and a `VoiceProfileStore` pure value type (encoding, decoding, CRUD) live entirely in `Sources/Core` with no UI or CoreAudio dependency, making them headless XCTest-able. `AudioModel` owns a `@Published profiles` collection and an `applyProfile(_:)` method that goes through the existing `applyPreset` + `applyVoiceChain` path (guarded by `isApplyingPreset`) so the live engine and SwiftUI UI update correctly. The collection is serialized as a JSON array and persisted under the single new UserDefaults key `mv.profiles`. UI lives in `SettingsView` as a dedicated profiles card.
 
-**Extensibility mandate:** The schema uses a `version` Int field and Codable optional fields so new profile-captured settings can be added by appending optionals to `VoiceProfile` — no migration, no schema break, no existing profiles invalidated. In the integrated build, Mouth Noise, Input Volume, and Smart Level are optional profile fields; Metering & Loudness remains the next extension point.
+**Extensibility mandate:** The schema uses a `version` Int field and Codable optional fields so new profile-captured settings can be added by appending optionals to `VoiceProfile` — no migration, no schema break, no existing profiles invalidated. In the integrated build, Mouth Noise, Input Volume, Smart Level, and Metering & Loudness are optional profile fields.
 
 **Tech Stack:** Swift 5.9, SwiftUI, Swift Package Manager, XCTest (pure logic tests, headless), JSONEncoder/JSONDecoder with `.convertFromSnakeCase` / `.convertToSnakeCase`.
 
@@ -26,7 +26,7 @@ The current model exposes four global presets (Meeting / Podcast / Tutorial / Cu
 
 Profile-captured settings added after the original profile design belong in optional fields:
 - **Mouth Noise / Input Volume / Smart Level**: integrated as optional fields so older saved JSON still decodes.
-- **Metering & Loudness plan**: a `lufsTarget: Float?` and `normalizationEnabled: Bool?`
+- **Metering & Loudness**: integrated as optional `loudnessTargetLufs: Float?` and `loudnessNormEnabled: Bool?` fields.
 
 The schema must absorb these by adding optional fields with no migration path required. The decoding strategy is: `JSONDecoder` with `keyDecodingStrategy = .convertFromSnakeCase`, all future fields declared `var fieldName: Type? = nil`, so unknown JSON keys are silently ignored and missing JSON keys default to `nil`. A `version: Int` field allows breaking migrations if they ever become necessary in a v2 schema.
 
@@ -1204,10 +1204,10 @@ The headless suite does not exercise the live audio path or SwiftUI. After imple
 
 ## Self-Review (completed during authoring)
 
-- **Spec coverage:** Named profiles (save/recall/rename/delete) ✓ Tasks 2–5. Serialized to `mv.profiles` ✓ Task 3. Core voice settings plus optional Mouth Noise, Input Volume, and Smart Level fields captured ✓ `VoiceProfile` struct. Extensible schema with version + optionals ✓ Task 1, explicitly called out for in-flight plans. Apply goes through `isApplyingPreset` guard ✓ Task 3 `applyProfile`. UI list in Settings ✓ Task 5. `VoicePreset`, `ClarityLevel`, and `MouthNoiseLevel` conformance to `Codable` ✓.
+- **Spec coverage:** Named profiles (save/recall/rename/delete) ✓ Tasks 2–5. Serialized to `mv.profiles` ✓ Task 3. Core voice settings plus optional Mouth Noise, Input Volume, Smart Level, and Metering & Loudness fields captured ✓ `VoiceProfile` struct. Extensible schema with version + optionals ✓ Task 1, explicitly called out for in-flight plans. Apply goes through `isApplyingPreset` guard ✓ Task 3 `applyProfile`. UI list in Settings ✓ Task 5. `VoicePreset`, `ClarityLevel`, and `MouthNoiseLevel` conformance to `Codable` ✓.
 - **Invariant coverage:** `isApplyingPreset` re-entrancy documented and enforced in Task 3 Step 3 with a step-by-step breakdown of the exact apply order. `mv.*` namespace preserved — only one new key `mv.profiles` added. No "MetalVoice"/"Ghostkwebb" appears anywhere in Sources/. All paths are repo-relative. `VoiceProfileStore.profiles` `private(set)` invariant respected — `AudioModel` never assigns to `store.profiles` directly; it uses `upsert`/`remove`/`rename` methods and `VoiceProfileStore.from(_:)` exclusively.
 - **TDD granularity:** Tasks 1 and 2 follow strict red → green → commit TDD. Tasks 3 and 5 are `swift build`-verified (cannot unit-test `AudioModel` or SwiftUI headlessly — matches the precedent set by the broadcast voice plan's Task 5 and Task 6). Task 4 adds pure serialization and insertion-order round-trip regression tests — it does NOT claim to test `AudioModel.applyProfile` (which requires a live CoreAudio engine); that path is verified exclusively by the manual smoke test.
-- **Extensibility:** Mouth Noise, Input Volume, and Smart Level are integrated as optional fields; future Metering & Loudness fields (`lufsTarget`, `normalizationEnabled`) remain documented as optional extension points in `VoiceProfile.swift` and the decision is captured in `knowledge1.md`.
+- **Extensibility:** Mouth Noise, Input Volume, Smart Level, and Metering & Loudness are integrated as optional fields; the decision is captured in `knowledge1.md`.
 - **No placeholder code:** every step shows complete, copy-pasteable implementations.
 
 ---

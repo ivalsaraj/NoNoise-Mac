@@ -9,8 +9,6 @@ import Foundation
 /// Decoding is tolerant of both unknown keys (future additions ignored silently) and missing optional
 /// keys (default to nil). The `VoiceProfile.decoder` is the single point of configuration for both.
 ///
-/// ## In-flight extension points (add as optional vars when those plans ship):
-/// - Metering & Loudness plan:  `var lufsTarget: Float? = nil`, `var normalizationEnabled: Bool? = nil`
 public struct VoiceProfile: Codable, Identifiable, Equatable, Sendable {
 
     // MARK: - Schema version
@@ -38,10 +36,8 @@ public struct VoiceProfile: Codable, Identifiable, Equatable, Sendable {
     public var mouthNoiseLevel: MouthNoiseLevel? = nil
     public var inputVolumeValue: Float? = nil
     public var smartLevelEnabled: Bool? = nil
-
-    // Metering & Loudness plan — add when that plan ships:
-    // public var lufsTarget: Float? = nil
-    // public var normalizationEnabled: Bool? = nil
+    public var loudnessNormEnabled: Bool? = nil
+    public var loudnessTargetLufs: Float? = nil
 
     // MARK: - Memberwise init (used by tests and AudioModel)
 
@@ -56,7 +52,9 @@ public struct VoiceProfile: Codable, Identifiable, Equatable, Sendable {
         clarityLevel: ClarityLevel,
         mouthNoiseLevel: MouthNoiseLevel? = nil,
         inputVolumeValue: Float? = nil,
-        smartLevelEnabled: Bool? = nil
+        smartLevelEnabled: Bool? = nil,
+        loudnessNormEnabled: Bool? = nil,
+        loudnessTargetLUFS: Float? = nil
     ) {
         self.id = id
         self.name = name
@@ -69,6 +67,8 @@ public struct VoiceProfile: Codable, Identifiable, Equatable, Sendable {
         self.mouthNoiseLevel = mouthNoiseLevel
         self.inputVolumeValue = inputVolumeValue
         self.smartLevelEnabled = smartLevelEnabled
+        self.loudnessNormEnabled = loudnessNormEnabled
+        self.loudnessTargetLufs = loudnessTargetLUFS
     }
 
     // MARK: - Factory

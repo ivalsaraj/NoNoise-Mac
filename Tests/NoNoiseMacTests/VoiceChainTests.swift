@@ -109,4 +109,84 @@ final class VoiceChainTests: XCTestCase {
         quiet.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
         XCTAssertTrue(quiet.allSatisfy { abs($0) < 1e-3 }, "re-enable must start from clean state")
     }
+
+    // MARK: - Loudness normalization gain
+
+    /// Default loudnessGain (1.0) is a no-op: disabled chain still passes through.
+    func testLoudnessGainDefaultIsNoOp() {
+        let chain = VoiceChain()
+        chain.configure(.disabled)               // polish off, clarity off
+        var buf: [Float] = [0.1, -0.2, 0.3, -0.4]
+        let copy = buf
+        buf.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+        XCTAssertEqual(buf, copy, "default loudnessGain must not alter samples")
+    }
+
+    /// A loudnessGain > 1 boosts the signal (still within the limiter ceiling).
+    /// TWO separately-configured chains: one at gain 2.0, one at gain 1.0, fed
+    /// IDENTICAL input. The 2.0 chain must end louder. (The earlier version mutated
+    /// the gain back to 1.0 on the same chain before processing — a no-op test.)
+    func testLoudnessGainBoostsWhenActive() {
+        var settings = VoiceChainSettings.disabled
+        settings.loudnessActive = true
+
+        let boosted = VoiceChain(); boosted.configure(settings)
+        boosted.setLoudnessGain(2.0)
+        let unity = VoiceChain(); unity.configure(settings)
+        unity.setLoudnessGain(1.0)
+        // Low-level input so neither chain hits the limiter ceiling (isolate the gain).
+        var loud  = [Float](repeating: 0.02, count: 4800)
+        var quiet = [Float](repeating: 0.02, count: 4800)
+        loud.withUnsafeMutableBufferPointer  { boosted.process($0.baseAddress!, count: $0.count) }
+        quiet.withUnsafeMutableBufferPointer { unity.process($0.baseAddress!,   count: $0.count) }
+        let rmsLoud  = sqrtf(loud.reduce(0)  { $0 + $1*$1 } / Float(loud.count))
+        let rmsQuiet = sqrtf(quiet.reduce(0) { $0 + $1*$1 } / Float(quiet.count))
+        XCTAssertGreaterThan(rmsLoud, rmsQuiet,
+                             "the 2.0-gain chain must end louder than the 1.0-gain chain")
+    }
+
+    /// Even with a large loudnessGain, the limiter still caps output at the ceiling.
+    func testLoudnessGainStillRespectsLimiterCeiling() {
+        let chain = VoiceChain()
+        chain.configure(VoicePreset.podcast.voiceChain)
+        chain.setLoudnessGain(8.0)               // extreme boost
+        var buf = [Float](repeating: 0.5, count: 4800)
+        buf.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+        let ceiling = powf(10, -1.0 / 20.0)      // podcast limiter ceiling
+        XCTAssertTrue(buf.allSatisfy { abs($0) <= ceiling + 1e-3 }, "limiter must still hold the ceiling")
+    }
+
+    // MARK: - loudnessActive activation (polish + clarity both off)
+
+    /// `loudnessActive == true` ALONE activates the chain (limiter + make-up gain)
+    /// even when polish and clarity are off — so normalization works in Meeting mode.
+    func testLoudnessActiveAloneActivatesGainAndLimiter() {
+        var s = VoiceChainSettings.disabled        // polish off, clarity off
+        s.loudnessActive = true
+        let chain = VoiceChain()
+        chain.configure(s)
+        XCTAssertTrue(chain.isActive, "loudnessActive alone must activate the chain")
+        chain.setLoudnessGain(2.0)
+        var buf = [Float](repeating: 0.02, count: 4800)
+        let input = buf
+        buf.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+        let rmsOut = sqrtf(buf.reduce(0)  { $0 + $1*$1 } / Float(buf.count))
+        let rmsIn  = sqrtf(input.reduce(0) { $0 + $1*$1 } / Float(input.count))
+        XCTAssertGreaterThan(rmsOut, rmsIn, "make-up gain must apply when loudnessActive activates the chain")
+    }
+
+    /// With every feature off (polish off, clarity off, loudnessActive false), output
+    /// is byte-for-byte unchanged — the chain is inactive and never touches samples.
+    func testDisabledChainWithLoudnessInactiveIsUnchanged() {
+        var s = VoiceChainSettings.disabled
+        s.loudnessActive = false
+        let chain = VoiceChain()
+        chain.configure(s)
+        XCTAssertFalse(chain.isActive, "no active reason ⇒ inactive chain")
+        chain.setLoudnessGain(2.0)                 // set, but inactive chain must ignore it
+        var buf: [Float] = [0.1, -0.2, 0.3, -0.4]
+        let copy = buf
+        buf.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+        XCTAssertEqual(buf, copy, "feature-off output must be unchanged even with loudnessGain set")
+    }
 }

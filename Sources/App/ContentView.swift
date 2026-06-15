@@ -13,6 +13,7 @@ struct ContentView: View {
             statusCard
             bypassBanner
             modeCard
+            hudCard
             clarityCard
             incomingCard
             mouthNoiseCard
@@ -101,6 +102,17 @@ struct ContentView: View {
                     .frame(height: 6)
             }
 
+            HStack(spacing: 8) {
+                Image(systemName: "speaker.wave.2.fill")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                MeterView(level: audioModel.outputLevel)
+                    .frame(height: 6)
+                if audioModel.isOutputClipping {
+                    Text("CLIP").font(.caption2).fontWeight(.bold).foregroundColor(.red)
+                }
+            }
+
             if audioModel.isInputNearCeiling || audioModel.isSourceMicClipping || audioModel.isOutputClipping {
                 VStack(alignment: .leading, spacing: 4) {
                     if audioModel.isSourceMicClipping {
@@ -160,6 +172,29 @@ struct ContentView: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
+        }
+        .nnCard()
+    }
+
+    // MARK: - Live HUD (AI activity + loudness + latency)
+
+    private var hudCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            cardLabel("Live", systemImage: "waveform.path.ecg")
+            HStack(spacing: 8) {
+                Text("AI").font(.caption2).foregroundColor(.secondary)
+                // MeterView scales level ×5 internally; aiActivity is already 0…1, so
+                // divide by 5 to use the full bar without a 5× over-scale.
+                MeterView(level: audioModel.aiActivity / 5).frame(height: 6)
+            }
+            HStack {
+                Text(audioModel.momentaryLUFS <= LoudnessMeter.silenceLUFS + 1
+                     ? "— LUFS" : String(format: "%.1f LUFS", audioModel.momentaryLUFS))
+                    .font(.caption).monospacedDigit().foregroundColor(.secondary)
+                Spacer()
+                Text(String(format: "%.0f ms latency", audioModel.addedLatencyMs))
+                    .font(.caption).monospacedDigit().foregroundColor(.secondary)
+            }
         }
         .nnCard()
     }

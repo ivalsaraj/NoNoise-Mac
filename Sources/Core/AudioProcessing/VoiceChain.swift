@@ -133,6 +133,10 @@ public struct VoiceChainSettings: Sendable, Equatable {
     public var limiterCeilingDb: Float
     public var clarity: ClarityLevel = .off
     public var mouthNoiseLevel: MouthNoiseLevel = .off
+    /// Loudness normalization is on. An independent activation reason: when true the
+    /// chain runs (limiter + pre-limiter make-up gain) even with polish and clarity
+    /// off, so normalization works in Meeting mode. Default false → no behavior change.
+    public var loudnessActive: Bool = false
 
     public static let disabled = VoiceChainSettings(
         enabled: false, highPassHz: 80, lowShelfHz: 180, lowShelfDb: 0,
@@ -158,7 +162,12 @@ public final class VoiceChain {
     private var mouthNoise: MouthNoiseLevel = .off
     private var enabled = false
     private var clarity: ClarityLevel = .off
+    private var loudnessActive = false
     private var active = false
+    /// Loudness-normalization make-up gain (linear). Written from main (lock-free
+    /// scalar; atomic on arm64), read on the render thread. 1.0 = no-op. Applied
+    /// just BEFORE the limiter so the ceiling still bounds the boosted signal.
+    private var loudnessGain: Float = 1
 
     public init(sampleRate: Float = 48000) {
         self.sampleRate = sampleRate
@@ -172,7 +181,8 @@ public final class VoiceChain {
         enabled = s.enabled
         clarity = s.clarity
         mouthNoise = s.mouthNoiseLevel
-        active = s.enabled || s.clarity != .off || s.mouthNoiseLevel != .off
+        loudnessActive = s.loudnessActive
+        active = s.enabled || s.clarity != .off || s.mouthNoiseLevel != .off || s.loudnessActive
         guard active else { return }
         // Clean start when the chain becomes active (don't inherit frozen state).
         // Switching between two *active* settings is intentionally bumpless EXCEPT for the
@@ -243,11 +253,11 @@ public final class VoiceChain {
                               sampleRate: sampleRate, enabled: false)
         }
 
-        // Limiter runs ONLY when a limiter-owning path is active (polish or clarity). The
-        // de-plosive/de-click stages are attenuation-only (they never raise level), so
+        // Limiter runs ONLY when a limiter-owning path is active (polish, clarity, or
+        // loudness normalization). The de-plosive/de-click stages are attenuation-only, so
         // mouth-noise-only mode needs no limiter — running it would clamp a loud CLEAN
         // sample above the ceiling purely because the feature is on (an identity violation).
-        if enabled || clarity != .off {
+        if enabled || clarity != .off || loudnessActive {
             limiter.configure(ceilingDb: s.limiterCeilingDb, releaseMs: 50, sampleRate: sampleRate)
         }
     }
@@ -264,17 +274,23 @@ public final class VoiceChain {
     public var isEnabled: Bool { enabled }
     public var isActive: Bool { active }
 
+    /// Set the loudness make-up gain. Plain scalar store — cheaper than a full
+    /// configure; called from the main-thread loudness timer.
+    public func setLoudnessGain(_ g: Float) { loudnessGain = g }
+
     /// Process `count` samples in place. No-op when inactive. Order:
-    /// HP → shelves → presence → de-esser → de-plosive → de-click → compressor → limiter.
+    /// HP → shelves → presence → de-esser → de-plosive → de-click → compressor → loudness gain → limiter.
     /// Polish stages run only when `enabled`; clarity stages only when `clarity != .off`;
-    /// mouth-noise stages only when `mouthNoise != .off`. The limiter runs only for a
-    /// limiter-owning path (polish or clarity) — the attenuation-only mouth-noise stages
-    /// never raise level, so mouth-noise-only mode is a true identity at rest for clean input.
+    /// mouth-noise stages only when `mouthNoise != .off`; loudness gain only when normalization is active.
+    /// The limiter runs only for a limiter-owning path (polish, clarity, or loudness) — the
+    /// attenuation-only mouth-noise stages never raise level, so mouth-noise-only mode is a true
+    /// identity at rest for clean input.
     public func process(_ buffer: UnsafeMutablePointer<Float>, count: Int) {
         guard active else { return }
         let doPolish   = enabled
         let doClarity  = clarity != .off
         let doMouth    = mouthNoise != .off
+        let doLoudness = loudnessActive
         for i in 0..<count {
             var x = buffer[i]
             if doPolish {
@@ -293,10 +309,12 @@ public final class VoiceChain {
             if doPolish {
                 x = comp.process(x)
             }
-            // Limiter runs ONLY for limiter-owning paths (polish/clarity). De-plosive and
-            // de-click are attenuation-only — they never raise level — so mouth-noise-only
-            // mode must NOT limit (limiting a loud clean sample would break identity at rest).
-            if doPolish || doClarity {
+            if doLoudness {
+                x *= loudnessGain
+            }
+            // Limiter runs ONLY for limiter-owning paths. Mouth-noise-only mode must NOT limit
+            // because limiting a loud clean sample would break identity at rest.
+            if doPolish || doClarity || doLoudness {
                 x = limiter.process(x)
             }
             buffer[i] = x

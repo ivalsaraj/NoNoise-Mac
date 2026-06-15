@@ -54,6 +54,7 @@ Everything happens **on your device**. Your audio never leaves your Mac.
 - **⌨️ Global Hotkeys + Stream Deck** — system-wide hotkeys (user-configurable) for every
   control action (toggle AI, A/B bypass, cycle preset, cycle Broadcast Voice, nudge gain), plus
   a `nonoisemac://` URL scheme for Stream Deck "Open" actions or shell scripting.
+- **📊 Live HUD & loudness** — see your input/output levels, a clip warning, an "AI working hard" signal, and added latency at a glance; an ITU-R BS.1770 LUFS meter with optional one-tap loudness normalization (−14 / −16 LUFS) keeps you consistent across calls and recordings.
 - **🛠️ Works everywhere** — any input (Built-in, USB, XLR via interface) → any app via a virtual cable.
 - **🟢 On by default** — launches actively cancelling noise; toggle from the menu bar anytime.
 - **💸 Free & open source** — MIT licensed.

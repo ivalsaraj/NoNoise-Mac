@@ -131,4 +131,36 @@ final class NoNoiseMacDSPTests: XCTestCase {
         // The enum sentinel must equal the DSP sentinel or the limit never disables.
         XCTAssertEqual(VoicePreset.maxAttenuationDb, DeepFilterNetDSP.maxAttenuationLimitDb)
     }
+
+    // MARK: - AI activity (suppression confidence)
+
+    /// No reduction (wet == dry magnitude) ⇒ activity 0 ("AI doing nothing").
+    func testAIActivityZeroWhenWetEqualsDry() {
+        let a = DeepFilterNetDSP.binActivity(dryMag: 0.5, wetMag: 0.5)
+        XCTAssertEqual(a, 0, accuracy: 1e-6)
+    }
+
+    /// Full suppression (wet ~0 against real dry) ⇒ activity ~1 ("AI working hard").
+    func testAIActivityOneWhenFullySuppressed() {
+        let a = DeepFilterNetDSP.binActivity(dryMag: 0.5, wetMag: 0.0)
+        XCTAssertEqual(a, 1, accuracy: 1e-6)
+    }
+
+    /// Half suppression ⇒ ~0.5.
+    func testAIActivityHalfWhenHalfSuppressed() {
+        let a = DeepFilterNetDSP.binActivity(dryMag: 1.0, wetMag: 0.5)
+        XCTAssertEqual(a, 0.5, accuracy: 1e-6)
+    }
+
+    /// Silence (dry ~0) ⇒ activity 0 (no division blow-up; nothing to suppress).
+    func testAIActivityZeroOnSilentDry() {
+        let a = DeepFilterNetDSP.binActivity(dryMag: 0.0, wetMag: 0.0)
+        XCTAssertEqual(a, 0, accuracy: 1e-6)
+    }
+
+    /// Wet louder than dry (the model added energy) clamps to 0, never negative.
+    func testAIActivityClampsWhenWetExceedsDry() {
+        let a = DeepFilterNetDSP.binActivity(dryMag: 0.2, wetMag: 0.5)
+        XCTAssertEqual(a, 0, accuracy: 1e-6)
+    }
 }
