@@ -11,12 +11,14 @@ struct ContentView: View {
         VStack(spacing: 14) {
             header
             statusCard
+            bypassBanner
             modeCard
             clarityCard
             devicesCard
             driverStatusRow
             footer
         }
+        .animation(.easeInOut(duration: 0.18), value: dispatcher.isBypassed)
         .padding(16)
         .frame(width: 320)
     }
@@ -76,10 +78,17 @@ struct ContentView: View {
                         .foregroundColor(on ? .green : .secondary)
                 }
                 Spacer()
-                Toggle("", isOn: $audioModel.isAIEnabled)
+                // Route through the dispatcher so a UI flip uses the SAME desired-vs-effective
+                // path as the toggle-AI hotkey, and disable it during bypass so the user can't
+                // re-enable AI processing against an active A/B bypass (finding #2).
+                Toggle("", isOn: dispatcher.aiToggleBinding)
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .tint(.green)
+                    .disabled(dispatcher.isBypassed)
+                    .help(dispatcher.isBypassed
+                          ? "Disabled while A/B bypass is active — release bypass to change AI."
+                          : "Toggle Noise Cancellation")
             }
 
             HStack(spacing: 8) {
@@ -115,6 +124,26 @@ struct ContentView: View {
             }
         }
         .nnCard(highlighted: on)
+    }
+
+    // MARK: - A/B bypass banner
+
+    @ViewBuilder
+    private var bypassBanner: some View {
+        if dispatcher.isBypassed {
+            HStack(spacing: 8) {
+                Image(systemName: "waveform.slash")
+                    .foregroundColor(.orange)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("A/B Bypass Active").font(.caption).fontWeight(.medium).foregroundColor(.orange)
+                    Text("Hearing raw mic — AI off while bypass is on.")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+                Spacer()
+            }
+            .nnCard()
+            .transition(.opacity.combined(with: .move(edge: .top)))
+        }
     }
 
     // MARK: - Mode (presets)
