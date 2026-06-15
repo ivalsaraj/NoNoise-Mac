@@ -41,6 +41,13 @@ docs, and reviews.
 ## Voice polish (Tier 2)
 - **Voice Polish / VoiceChain** — post-DSP shaping: high-pass → low-shelf → high-shelf →
   compressor → limiter. Off in Meeting; on in Podcast/Tutorial/Custom.
+- **Clarity / Broadcast Voice** — an optional, mode-independent enhancement
+  (`ClarityLevel`: off/low/medium/high) layered on the voice chain. Couples a
+  **presence** lift with a **de-esser** so "crisp" never becomes harsh.
+- **Presence** — a wide-Q peaking biquad (~4.5 kHz) that lifts intelligibility.
+  Unity gain at DC/Nyquist, so the vocal body/identity is untouched.
+- **De-esser** — a subtractive split-band sibilance controller
+  (`out = x − frac·sib`). Identity at rest; only acts on loud sibilant transients.
 - **Biquad** — RBJ-cookbook second-order IIR filter (TDF-II).
 - **Compressor** — log-domain feed-forward dynamics (threshold/ratio/attack/release/makeup).
 - **Limiter** — fast peak limiter + hard clamp; the final overflow guard (ceiling dB).

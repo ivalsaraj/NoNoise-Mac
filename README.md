@@ -48,6 +48,7 @@ Everything happens **on your device**. Your audio never leaves your Mac.
 - **⚡ Real-time feel** — a tight Metal/Accelerate pipeline keeps latency negligible for live calls.
 - **🔒 100% private** — fully on-device on the Neural Engine; nothing is uploaded, ever.
 - **🎛️ One-click modes** — Meeting, Podcast, Tutorial, or Custom, with strength + tone control.
+- **🎙️ Broadcast Voice** — a one-tap clarity lift (Off / Low / Medium / High) that adds studio presence and tames sibilance, so you sound clearer and more present while still sounding like *you*.
 - **🛠️ Works everywhere** — any input (Built-in, USB, XLR via interface) → any app via a virtual cable.
 - **🟢 On by default** — launches actively cancelling noise; toggle from the menu bar anytime.
 - **💸 Free & open source** — MIT licensed.
@@ -62,6 +63,10 @@ Everything happens **on your device**. Your audio never leaves your Mac.
 | **Custom** | Your own balance | Your `Strength` + `Reduction Limit` | On (balanced) |
 
 Your selection (and any fine-tuning) is remembered between launches.
+
+### 🎙️ Broadcast Voice
+
+An optional clarity enhancement layered on top of any mode. It pairs a gentle, wide presence lift with an automatic de-esser, so added "air" never becomes harsh sibilance. **Off** by default; **Low / Medium / High** increase the effect. It is designed to be transparent — a peaking bell with unity gain at the low end and a de-esser that only acts on real "ess" sounds — so it preserves the identity of your voice.
 
 ## 📥 Install
 

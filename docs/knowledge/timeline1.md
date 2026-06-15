@@ -2,6 +2,16 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Broadcast Voice (clarity) added
+- Added an Off/Low/Medium/High **Broadcast Voice** control: a wide-Q presence peaking bell
+  (`Biquad.setPeaking`) + a subtractive split-band `DeEsser` (`Dynamics.swift`), wired into
+  `VoiceChain` via `ClarityLevel` on `VoiceChainSettings` and injected by
+  `AudioModel.applyVoiceChain()` on top of the active preset (persisted under `mv.clarity`).
+- UI: a segmented picker in Settings and in the menu-bar popover.
+- Design constraint — preserve the original voice — enforced structurally: the de-esser is an
+  identity below threshold, the presence bell has unity DC gain, and `clarity == .off` leaves
+  existing presets byte-for-byte unchanged.
+
 ### 2026-06-15 — Live input-device refresh
 - Added a CoreAudio hardware-device listener in `AudioModel` so newly plugged microphones refresh
   into the NoNoise Mac input picker without relaunching the app. Refreshes are debounced, preserve

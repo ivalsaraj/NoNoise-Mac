@@ -5,6 +5,20 @@ for the must-read failure modes.
 
 ---
 
+### [DECISION] 2026-06-15 — Broadcast Voice preserves voice identity by construction
+- **Problem:** A "crispiness"/clarity control naïvely implemented as a high-shelf boost amplifies
+  sibilance, mouth noise, and residual hiss (the classic "ice-pick" voice).
+- **Decision:** Implement clarity as (1) a wide-Q **peaking bell** at ~4.5 kHz with **unity gain at
+  DC/Nyquist** (cannot alter the vocal fundamental/body) and (2) a **subtractive split-band
+  de-esser** `out = x − frac·sib` that is a **perfect identity below threshold** and only removes a
+  capped fraction of the sibilant band. De-ess scales WITH the presence lift so "crisp" is always
+  paired with sibilance control.
+- **Rule:** Any future "voice enhancement" must default to a verifiable null/identity at rest and
+  must not color the low/mid band — prove it with a unity-DC-gain test and a below-threshold
+  identity test.
+- **Files:** `Sources/Core/AudioProcessing/Biquad.swift`,
+  `Sources/Core/AudioProcessing/Dynamics.swift`, `Sources/Core/AudioProcessing/VoiceChain.swift`.
+
 ### [PATTERN] 2026-06-15 — Device lists refresh from HAL notifications, not polling or relaunch
 - **Symptom:** macOS showed a newly plugged microphone immediately, but NoNoise Mac's input picker
   stayed stale until the app was relaunched.
