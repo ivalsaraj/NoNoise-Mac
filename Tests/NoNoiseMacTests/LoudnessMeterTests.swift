@@ -72,4 +72,38 @@ final class LoudnessMeterTests: XCTestCase {
         XCTAssertEqual(m.momentaryLUFS, LoudnessMeter.silenceLUFS, accuracy: 1e-3)
         XCTAssertEqual(m.samplePeak, 0, accuracy: 1e-9)
     }
+
+    // MARK: - Integrated (gated) loudness
+
+    /// A steady tone yields an integrated value ≈ its momentary value.
+    func testIntegratedMatchesSteadyTone() {
+        var m = LoudnessMeter(sampleRate: 48000)
+        let amp = powf(10, -20.0 / 20.0)
+        for i in 0..<96000 { m.process(amp * sinf(2 * Float.pi * 1000 * Float(i) / 48000)) } // 2 s
+        XCTAssertEqual(m.integratedLUFS, m.momentaryLUFS, accuracy: 1.0)
+        XCTAssertEqual(m.integratedLUFS, -23.0, accuracy: 1.0)
+    }
+
+    /// Silence below the absolute −70 LUFS gate does NOT drag the integrated value
+    /// down: a loud passage followed by silence still integrates near the loud level.
+    func testIntegratedGatesOutSilence() {
+        var m = LoudnessMeter(sampleRate: 48000)
+        let amp = powf(10, -20.0 / 20.0)
+        for i in 0..<96000 { m.process(amp * sinf(2 * Float.pi * 1000 * Float(i) / 48000)) } // 2 s loud
+        for _ in 0..<96000 { m.process(0) }                                                  // 2 s silence
+        XCTAssertEqual(m.integratedLUFS, -23.0, accuracy: 1.5,
+                       "gated integration must ignore the silent gap")
+    }
+
+    /// Integrated loudness ignores blocks below the relative gate (quiet vs loud).
+    func testIntegratedIsGatedNotPlainAverage() {
+        var m = LoudnessMeter(sampleRate: 48000)
+        let loud = powf(10, -14.0 / 20.0)
+        let quiet = powf(10, -50.0 / 20.0)  // > 10 LU below loud → gated out
+        for i in 0..<96000 { m.process(loud  * sinf(2 * Float.pi * 1000 * Float(i) / 48000)) }
+        for i in 0..<96000 { m.process(quiet * sinf(2 * Float.pi * 1000 * Float(i) / 48000)) }
+        let plainAverageWouldBe: Float = -20  // rough midpoint if NOT gated
+        XCTAssertGreaterThan(m.integratedLUFS, plainAverageWouldBe,
+                             "relative gate must drop the quiet blocks, keeping the level near the loud passage")
+    }
 }

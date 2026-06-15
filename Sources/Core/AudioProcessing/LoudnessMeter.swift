@@ -30,6 +30,22 @@ public struct LoudnessMeter {
 
     private(set) public var samplePeak: Float = 0
 
+    // Integrated (gated) state — per 400 ms block. Running sums + a fixed-size ring
+    // of absolute-gated block mean-squares for the relative gate. NO growth: the ring
+    // is pre-allocated and written by index (wraparound), so process() never allocates.
+    private var blockLen = 0                    // samples per 400 ms block (set in init)
+    private var blockMeanSquareSum: Float = 0   // Σ mean-square accumulated in the current block
+    private var blockSamples = 0                // samples seen in the current block
+    // Absolute-gate-passing blocks: count + Σ mean-square (for the relative gate's threshold).
+    private var absGatedCount = 0
+    private var absGatedMSSum: Float = 0
+    // Fixed-size ring of absolute-gated block mean-squares (the relative-gate input).
+    // Pre-allocated; write-by-index with wraparound — NEVER appended to on the render path.
+    private static let maxBlocks = 9000         // 9000 × 400 ms = 1 h rolling window (bounded)
+    private var blockMSRing: [Float]            // count == maxBlocks (allocated in init)
+    private var blockMSRingHead = 0             // next write slot (wraps at maxBlocks)
+    private var blockMSRingFilled = 0           // how many slots hold real data (≤ maxBlocks)
+
     public init(sampleRate: Float = 48000) {
         self.sampleRate = sampleRate
         // The published BS.1770 K-weighting coefficients below are defined at 48 kHz,
@@ -49,6 +65,8 @@ public struct LoudnessMeter {
                            a1: -1.99004745483398, a2: 0.99007225036621)
         let windowLen = max(1, Int(0.4 * sampleRate))   // 400 ms momentary window
         momentaryRing = [Float](repeating: 0, count: windowLen)
+        blockLen = max(1, Int(0.4 * sampleRate))         // 400 ms integration block
+        blockMSRing = [Float](repeating: 0, count: Self.maxBlocks)
     }
 
     public mutating func reset() {
@@ -56,6 +74,11 @@ public struct LoudnessMeter {
         for i in 0..<momentaryRing.count { momentaryRing[i] = 0 }
         momentaryHead = 0; momentaryFilled = 0; momentarySum = 0
         samplePeak = 0
+        // Integrated (gated) state.
+        blockMeanSquareSum = 0; blockSamples = 0
+        absGatedCount = 0; absGatedMSSum = 0
+        for i in 0..<blockMSRing.count { blockMSRing[i] = 0 }
+        blockMSRingHead = 0; blockMSRingFilled = 0
     }
 
     /// Feed one sample. Updates the K-weighted momentary mean-square ring and the
@@ -72,6 +95,25 @@ public struct LoudnessMeter {
         momentaryHead += 1
         if momentaryHead == momentaryRing.count { momentaryHead = 0 }
         if momentaryFilled < momentaryRing.count { momentaryFilled += 1 }
+
+        // Integrated (gated) block accumulation — runs on the render thread, no alloc.
+        blockMeanSquareSum += sq
+        blockSamples += 1
+        if blockSamples >= blockLen {
+            let blockMS = blockMeanSquareSum / Float(blockSamples)
+            // Absolute gate: keep only blocks louder than the −70 LUFS floor.
+            if Self.loudness(meanSquare: blockMS) > -70 {
+                absGatedCount += 1
+                absGatedMSSum += blockMS
+                // Write into the fixed ring by index (wraparound) — never append.
+                blockMSRing[blockMSRingHead] = blockMS
+                blockMSRingHead += 1
+                if blockMSRingHead == Self.maxBlocks { blockMSRingHead = 0 }
+                if blockMSRingFilled < Self.maxBlocks { blockMSRingFilled += 1 }
+            }
+            blockMeanSquareSum = 0
+            blockSamples = 0
+        }
     }
 
     /// Loudness of the current momentary (400 ms) window, in LUFS. Returns the
@@ -80,9 +122,23 @@ public struct LoudnessMeter {
         Self.loudness(meanSquare: momentaryFilled > 0 ? momentarySum / Float(momentaryFilled) : 0)
     }
 
-    /// Integrated (gated) loudness — implemented in Task 2. Until then it mirrors
-    /// momentary so the property exists for the telemetry wiring.
-    public var integratedLUFS: Float { momentaryLUFS }
+    /// Integrated (gated) loudness in LUFS — BS.1770 absolute (−70 LUFS) + relative
+    /// (−10 LU) gating over the absolute-gated block set. Returns the silence
+    /// sentinel until at least one block passes the absolute gate.
+    public var integratedLUFS: Float {
+        guard blockMSRingFilled > 0, absGatedCount > 0 else { return Self.silenceLUFS }
+        // Relative gate: −10 LU below the mean loudness of absolute-gated blocks.
+        // (Mean uses the running absGatedMSSum/absGatedCount; the ring bounds memory.)
+        let absMeanMS = absGatedMSSum / Float(absGatedCount)
+        let relThresholdMS = absMeanMS * powf(10, -10.0 / 10.0)   // −10 LU in the power domain
+        var count = 0
+        var msSum: Float = 0
+        for i in 0..<blockMSRingFilled where blockMSRing[i] >= relThresholdMS {
+            count += 1; msSum += blockMSRing[i]
+        }
+        guard count > 0 else { return Self.loudness(meanSquare: absMeanMS) }
+        return Self.loudness(meanSquare: msSum / Float(count))
+    }
 
     /// LUFS from a K-weighted mean-square value, with the BS.1770 −0.691 dB offset.
     /// Returns the silence sentinel for non-positive energy.
