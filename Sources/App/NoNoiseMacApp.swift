@@ -1,5 +1,6 @@
 import SwiftUI
 import Core
+import Sparkle
 
 @main
 struct NoNoiseMacApp: App {
@@ -12,6 +13,7 @@ struct NoNoiseMacApp: App {
     @StateObject var audioModel: AudioModel
     @StateObject private var dispatcher: ActionDispatcher
     @StateObject private var hotkeyManager: HotkeyManager
+    @StateObject private var updaterController: UpdaterController
 
     init() {
         // Init order matters: AudioModel → ActionDispatcher(model:) → HotkeyManager(dispatcher:).
@@ -22,6 +24,12 @@ struct NoNoiseMacApp: App {
         _dispatcher = StateObject(wrappedValue: dispatcher)
         _hotkeyManager = StateObject(wrappedValue: hotkeys)
 
+        // Create the Sparkle updater at launch (same "singletons in init()" rule as above) so
+        // scheduled/automatic checks are live before the popover is ever opened. Hand the updater
+        // to the AppDelegate so it can fire one prompt background check in didFinishLaunching.
+        let updater = UpdaterController()
+        _updaterController = StateObject(wrappedValue: updater)
+
         // Hand the dispatcher to the AppDelegate at LAUNCH (finding #3) — NOT in
         // ContentView.onAppear. A MenuBarExtra's content view isn't instantiated until the
         // popover first opens, so wiring the URL fallback in onAppear leaves AppDelegate's
@@ -30,11 +38,12 @@ struct NoNoiseMacApp: App {
         // @NSApplicationDelegateAdaptor's wrapped value is constructed before this init body
         // runs, so `appDelegate` is available here.
         appDelegate.dispatcher = dispatcher
+        appDelegate.updater = updater.updater
     }
 
     var body: some Scene {
         MenuBarExtra {
-            ContentView(audioModel: audioModel, dispatcher: dispatcher, hotkeyManager: hotkeyManager)
+            ContentView(audioModel: audioModel, dispatcher: dispatcher, hotkeyManager: hotkeyManager, updaterController: updaterController)
         } label: {
             Image(nsImage: NoNoiseLogoImage.menuBar(isActive: audioModel.isAIEnabled))
         }
@@ -56,8 +65,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     /// dispatcher before the popover is ever opened.
     var dispatcher: ActionDispatcher?
 
+    /// Wired by NoNoiseMacApp.init() at launch so the launch-time update check can run.
+    var updater: SPUUpdater?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+
+        // Scheduled checks run on SUScheduledCheckInterval; this one extra background check at
+        // launch surfaces a waiting update promptly. It shows UI only when an update is found
+        // (no nag when up to date), and is guarded so it respects the user's automatic-check pref.
+        if updater?.automaticallyChecksForUpdates == true {
+            updater?.checkForUpdatesInBackground()
+        }
     }
 
     /// Fallback URL handler for cases where the SwiftUI onOpenURL doesn't fire

@@ -9,7 +9,9 @@ let package = Package(
     products: [
         .executable(name: "NoNoiseMac", targets: ["NoNoiseMac"])
     ],
-    dependencies: [],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
+    ],
     targets: [
         .target(
             name: "Core",
@@ -28,7 +30,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "NoNoiseMac",
-            dependencies: ["Core"],
+            dependencies: [
+                "Core",
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
             path: "Sources/App",
             resources: [
                 .process("../../Resources")

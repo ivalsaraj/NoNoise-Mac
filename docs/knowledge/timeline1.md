@@ -2,6 +2,19 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Sparkle auto-updater (Valsaraj)
+- Added in-app auto-update via Sparkle 2 (SwiftPM): `UpdaterController` at launch, guarded
+  background check in `AppDelegate`, **Check for Updates…** in the popover footer.
+- `scripts/version-from-tag.sh` + tests: monotonic `CFBundleVersion` =
+  `MAJOR*1000000+MINOR*1000+PATCH` (replaces broken MAJOR.MINOR-digits formula that ignored PATCH).
+- `release.sh` stamps via the helper; CI (`release.yml`) asserts plist↔tag↔appcast↔asset and
+  publishes EdDSA-signed `appcast.xml` to the fixed `appcast` GitHub release for stable `vX.Y.Z` tags.
+- `bundle.sh` embeds `Sparkle.framework` with ditto + inside-out ad-hoc signing (nested `-o runtime`,
+  outer app no Hardened Runtime — never `--deep`).
+- `SPARKLE_PRIVATE_KEY` GitHub secret + `SUPublicEDKey`/`SUFeedURL` in Info.plist.
+- `swift build -c release --arch arm64` + `./bundle.sh` + `codesign --verify --deep --strict` green.
+- `README.md`, `AGENTS.md`, `docs/knowledge/knowledge1.md`.
+
 ### 2026-06-15 — Mouth-noise finishers redesigned: transient de-plosive + peak-follower de-click (Valsaraj)
 - **Symptom (user report):** turning Mouth Noise on muffled the highs and added faint distortion.
 - **Root cause:** the old `DePlosive` was a STEADY-STATE detector — it ducked the low band whenever

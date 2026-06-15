@@ -231,6 +231,16 @@ call — just de-noised. It runs a **second** on-device AI stream and is **off b
 stream only runs while enabled). For raw monitoring alongside the cleaned feed, point the call app
 at a macOS **Multi-Output Device** that includes both the loopback and your speakers.
 
+## Updating
+
+NoNoise Mac updates itself with [Sparkle](https://sparkle-project.org). It checks for new
+**stable** releases on launch and daily; when one is available you'll get a native
+"A new version is available" prompt, or use **Check for Updates…** in the popover.
+
+**First install only:** the updater ships starting with the first Sparkle-enabled release.
+If you're on an older build, download that first release manually (right-click → Open, since the
+app is ad-hoc signed). After that, updates are automatic.
+
 ## 💻 Advanced: dual pipelines (CLI)
 
 Want to clean your **outgoing mic** *and* clean **incoming** audio from your headphones at the

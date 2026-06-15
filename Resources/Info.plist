@@ -31,5 +31,13 @@
 			</array>
 		</dict>
 	</array>
+	<key>SUFeedURL</key>
+	<string>https://github.com/ivalsaraj/NoNoise-Mac/releases/download/appcast/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>qoQrd6lwz1YFyTo1yutlnpxn//XEJUjugkf1uroGZWQ=</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>86400</integer>
 </dict>
 </plist>

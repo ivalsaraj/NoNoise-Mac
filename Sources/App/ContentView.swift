@@ -6,6 +6,7 @@ struct ContentView: View {
     @ObservedObject var audioModel: AudioModel
     @ObservedObject var dispatcher: ActionDispatcher
     @ObservedObject var hotkeyManager: HotkeyManager
+    @ObservedObject var updaterController: UpdaterController
 
     var body: some View {
         VStack(spacing: 14) {
@@ -274,6 +275,14 @@ struct ContentView: View {
                 Label("Report", systemImage: "exclamationmark.bubble")
             }
             .controlSize(.small)
+
+            Button {
+                updaterController.checkForUpdates()
+            } label: {
+                Label("Check for Updates…", systemImage: "arrow.down.circle")
+            }
+            .controlSize(.small)
+            .disabled(!updaterController.canCheckForUpdates)
 
             Spacer()
 

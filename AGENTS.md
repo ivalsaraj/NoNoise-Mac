@@ -133,6 +133,23 @@ exactly two keys:
 
 Do not add entitlements beyond these two without a measured, documented need.
 
+## Auto-update (Sparkle)
+- The app embeds **Sparkle 2** (SwiftPM, app target only). The updater is created at launch in
+  `NoNoiseMacApp.init()` (`UpdaterController`), same singleton rule as the other launch objects.
+- **`CFBundleVersion` is a MONOTONIC INTEGER** (`MAJOR*1000000+MINOR*1000+PATCH`), NOT semver —
+  Sparkle compares it against the installed bundle version. `scripts/version-from-tag.sh` is the
+  single source of that mapping (tested by `scripts/version-from-tag.test.sh`); **`release.sh` calls
+  it** to stamp `Info.plist`. Keep minor/patch < 1000. Do NOT reintroduce the old
+  `MAJOR.MINOR`-digits formula — it ignored PATCH and wasn't monotonic.
+- **Versioning is owned by `release.sh`** (it bumps + commits + tags). CI does NOT re-stamp; it
+  trusts the committed `Info.plist` and asserts plist↔tag↔appcast↔asset all agree.
+- **`bundle.sh` signs inside-out (never `--deep`):** nested Sparkle code gets `-o runtime`, the outer
+  app stays ad-hoc with no Hardened Runtime. `release.yml` signs the zip, runs `generate_appcast`,
+  asserts, and publishes `appcast.xml` to the fixed `appcast` release tag.
+- **`SUFeedURL`** (Info.plist) must equal `…/releases/download/appcast/appcast.xml`. Public EdDSA key
+  is in Info.plist (`SUPublicEDKey`); the **private key is the `SPARKLE_PRIVATE_KEY` GitHub secret**,
+  escrowed separately — losing it forces every user to reinstall, so never regenerate it casually.
+
 ## Branding & identifier conventions (do not regress)
 - Display name: **NoNoise Mac**. Code identifier: **NoNoiseMac** (executable, SwiftPM
   package + targets, class prefix, asset filenames). Bundle id: **com.ivalsaraj.NoNoiseMac**.
