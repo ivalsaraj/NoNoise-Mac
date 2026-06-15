@@ -14,7 +14,7 @@ both humans and AI agents are first-class contributors.
 ```bash
 swift build          # compile
 swift test           # 30 pure DSP/preset/voice-chain tests (headless)
-./bundle.sh          # build NoNoiseMac.app + NoNoiseMacCLI (Apple Silicon)
+./install-app.sh     # optimized arm64 build + install to /Applications
 ```
 
 ## Ground rules

@@ -37,14 +37,18 @@ cable so any app (Zoom, Meet, Discord, OBS, …) receives studio-clean audio.
 ## Build, run, test
 ```bash
 swift build                 # debug
-swift build -c release      # release (bundle.sh prerequisite)
+swift build -c release --arch arm64  # optimized Apple Silicon release (bundle.sh prerequisite)
 swift test                  # 30 pure tests — no mic/CoreML runtime needed
 ./bundle.sh                 # → NoNoiseMac.app + NoNoiseMacCLI (codesigned w/ entitlements)
 ./bundle.sh --with-driver   # also builds NoNoiseMic.driver and stages it NEXT TO the app
+./install-app.sh            # arm64 release build + bundle + install to /Applications
+./install-app.sh --with-driver # same, also stages NoNoiseMic.driver next to the app
 ```
 The virtual mic has its own scripts: `./build-driver.sh`, `sudo ./install-driver.sh`,
 `sudo ./uninstall-driver.sh` (see "NoNoise Mic virtual driver" below). The driver is staged as a
 sibling of the app, never nested inside the signed `.app`.
+Release installs MUST build with `--arch arm64`; NoNoise Mac is Apple-Silicon-only, and release
+builds are the optimized path for M-series chips.
 The app is a menu-bar utility (`LSUIElement`); **AI noise cancellation is ON by default**
 (`AudioModel.isAIEnabled = true`).
 

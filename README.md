@@ -73,15 +73,21 @@ No notarized binary is shipped yet — building from source takes ~2 minutes on 
 ```bash
 git clone https://github.com/ivalsaraj/NoNoise-Mac.git
 cd NoNoise-Mac
-swift build -c release      # compile
-./bundle.sh                 # → NoNoiseMac.app + NoNoiseMacCLI (ad-hoc signed)
+./install-app.sh            # optimized arm64 build → /Applications/NoNoiseMac.app
+```
+
+`install-app.sh` runs `swift build -c release --arch arm64`, bundles/signs the app, and installs it
+to **Applications**. To build the app and stage the virtual mic driver in one pass:
+
+```bash
+./install-app.sh --with-driver
 ```
 
 Then:
 
-1. Drag **`NoNoiseMac.app`** to your **Applications** folder.
-2. First launch: **right-click → Open** (it's ad-hoc signed). If macOS blocks it, go to
+1. First launch: **right-click → Open** (it's ad-hoc signed). If macOS blocks it, go to
    **System Settings → Privacy & Security → Open Anyway**.
+2. If you used `--with-driver`, install the staged driver with `sudo ./install-driver.sh`.
 
 > Prebuilt releases will land on the [Releases page](https://github.com/ivalsaraj/NoNoise-Mac/releases) — ⭐ the repo to get notified.
 
@@ -174,7 +180,7 @@ and routed out — it is never sent off your Mac. There is no telemetry and no a
 - **Audio:** AVFoundation, CoreAudio, AudioToolbox, Accelerate (vDSP)
 - **AI:** CoreML + Metal, model `computeUnits = .all`
 - **Model:** [DeepFilterNet3](https://github.com/Rikorose/DeepFilterNet) (streaming UNet)
-- **Packaging:** Swift Package Manager + `bundle.sh`
+- **Packaging:** Swift Package Manager + `bundle.sh` / `install-app.sh`
 
 ## 🤖 Contributing & AI-native
 

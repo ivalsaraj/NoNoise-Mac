@@ -2,6 +2,13 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Apple Silicon install script
+- Added `install-app.sh`, a one-command local installer that runs `swift build -c release --arch arm64`,
+  bundles/signs `NoNoiseMac.app`, installs it to `/Applications`, verifies the copied app signature,
+  and optionally stages `NoNoiseMic.driver` via `--with-driver`.
+- Documented the release-build rule in `AGENTS.md`: local installs MUST use the optimized arm64
+  release path because NoNoise Mac is Apple-Silicon-only.
+
 ### 2026-06-15 — Tier 3 / Spec A Phase A1: NoNoise Mic virtual microphone driver
 - Shipped a userspace CoreAudio **AudioServerPlugIn** (`Driver/NoNoiseMic/`) publishing a visible
   input-only **NoNoise Mic** + a hidden output-only **NoNoise Mic Engine** (48 kHz, 2ch,
