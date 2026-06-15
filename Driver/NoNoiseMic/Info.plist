@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>NoNoiseMic</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.ivalsaraj.NoNoiseMic</string>
+    <key>CFBundleName</key>
+    <string>NoNoiseMic</string>
+    <key>CFBundlePackageType</key>
+    <string>BNDL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFPlugInFactories</key>
+    <dict>
+        <key>EC4174AE-7A57-4CED-BC1C-E9EFE80CCDD0</key>
+        <string>NoNoiseMic_Create</string>
+    </dict>
+    <key>CFPlugInTypes</key>
+    <dict>
+        <!-- kAudioServerPlugInTypeUUID -->
+        <key>443ABAB8-E7B3-491A-B985-BEB9187030DB</key>
+        <array>
+            <string>EC4174AE-7A57-4CED-BC1C-E9EFE80CCDD0</string>
+        </array>
+    </dict>
+</dict>
+</plist>
