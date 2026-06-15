@@ -558,6 +558,12 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         }
     }
 
+    /// UID for a picked incoming-source `DeviceStruct.id` (capture is by UID, not AudioObjectID).
+    /// Lets the Settings picker tag rows with the UID that `incomingSourceUID` binds to.
+    public func uid(forIncomingSourceID id: AudioObjectID) -> String {
+        incomingSourceUIDByID[id] ?? ""
+    }
+
     func fetchOutputDevices() {
         var propertyAddress = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,

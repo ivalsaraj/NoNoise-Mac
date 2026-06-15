@@ -33,6 +33,7 @@ struct GeneralSettingsView: View {
                 suppressionCard
                 inputVolumeCard
                 gainCard
+                incomingCard
                 footer
             }
             .padding(.trailing, 2)
@@ -220,6 +221,51 @@ struct GeneralSettingsView: View {
                     withAnimation { audioModel.outputGainValue = 1.0 }
                 }
                 .controlSize(.small)
+            }
+        }
+        .nnCard()
+    }
+
+    // MARK: Clean Incoming / Guest
+
+    private var incomingCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionHeader("Clean Incoming / Guest", systemImage: "person.wave.2.fill")
+
+            Toggle(isOn: $audioModel.incomingCleanupEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Clean the other side").font(.subheadline)
+                    Text("De-noise the guest/caller you hear. Route the call app's speaker into a loopback device (e.g. BlackHole), then pick it below.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+
+            if audioModel.incomingCleanupEnabled {
+                HStack(spacing: 10) {
+                    Text("Incoming from").font(.subheadline).frame(width: 110, alignment: .leading)
+                    Picker("", selection: $audioModel.incomingSourceUID) {
+                        Text("Select…").tag("")
+                        ForEach(audioModel.incomingSourceDevices) { dev in
+                            Text(dev.name).tag(audioModel.uid(forIncomingSourceID: dev.id))
+                        }
+                    }
+                    .labelsHidden().frame(maxWidth: .infinity)
+                }
+                HStack(spacing: 10) {
+                    Text("Hear on").font(.subheadline).frame(width: 110, alignment: .leading)
+                    Picker("", selection: $audioModel.incomingOutputDeviceID) {
+                        ForEach(audioModel.monitorOutputDevices) { dev in
+                            Text(dev.name).tag(dev.id)
+                        }
+                    }
+                    .labelsHidden().frame(maxWidth: .infinity)
+                }
+                if audioModel.incomingSourceDevices.isEmpty {
+                    Label("No loopback device found. Install BlackHole or Loopback and set your call app's speaker to it.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundColor(.orange)
+                }
             }
         }
         .nnCard()
