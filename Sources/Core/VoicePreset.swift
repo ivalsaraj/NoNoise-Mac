@@ -3,7 +3,7 @@ import Foundation
 /// User-facing noise-suppression profiles. Each non-custom preset maps to a
 /// complete set of DSP parameters; `.custom` carries no parameters (the user's
 /// dialed-in values are kept).
-public enum VoicePreset: String, CaseIterable, Identifiable, Sendable {
+public enum VoicePreset: String, CaseIterable, Identifiable, Codable, Sendable {
     case meeting
     case podcast
     case tutorial

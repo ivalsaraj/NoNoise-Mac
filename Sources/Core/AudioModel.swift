@@ -188,6 +188,11 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     @Published public var isSourceMicClipping: Bool = false
     @Published public var smartLevelMessage: String?
 
+    /// The user's saved Voice Profiles. Persisted as a JSON array under `mv.profiles`.
+    /// Mutations go through `saveCurrentAsProfile`, `deleteProfile`, and `renameProfile`
+    /// (not direct array mutation) to keep persistence consistent.
+    @Published public var profiles: [VoiceProfile] = []
+
     private var isApplyingPreset = false
 
     // Telemetry scalars written by capture/render; published by the meter timer (~25 Hz).
@@ -216,6 +221,7 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         static let incomingEnabled = "mv.incomingEnabled"
         static let incomingSourceUID = "mv.incomingSourceUID"
         static let incomingOutputUID = "mv.incomingOutputUID"
+        static let profiles = "mv.profiles"   // Voice Profiles (JSON array)
     }
 
     public struct DeviceStruct: Identifiable {
@@ -376,6 +382,91 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         persistSettings()
     }
 
+    // MARK: - Voice Profiles
+
+    /// Capture the current live settings as a named profile and persist.
+    /// If `existingID` is provided, the existing profile is updated in place (rename + re-snapshot);
+    /// otherwise a new profile with a fresh UUID is created.
+    public func saveCurrentAsProfile(name: String, existingID: UUID? = nil) {
+        let profile = VoiceProfile(
+            id: existingID ?? UUID(),
+            name: name,
+            preset: selectedPreset,
+            suppressionStrength: suppressionStrength,
+            attenuationLimitDb: attenuationLimitDb,
+            outputGainValue: outputGainValue,
+            voicePolishEnabled: voicePolishEnabled,
+            clarityLevel: clarityLevel,
+            mouthNoiseLevel: mouthNoiseLevel,
+            inputVolumeValue: inputVolumeValue,
+            smartLevelEnabled: smartLevelEnabled
+        )
+        var store = VoiceProfileStore.from(profiles)
+        store.upsert(profile)
+        profiles = store.profiles
+        persistProfiles()
+    }
+
+    /// Apply a saved profile to the live engine. Uses the `isApplyingPreset` guard so:
+    /// — setting each @Published property does NOT trigger `onKnobChanged` mid-apply
+    /// — `persistSettings` and `applyVoiceChain` are called exactly once, after all values are set
+    /// — `selectedPreset` does not spuriously flip to `.custom` during the apply
+    ///
+    /// Verified by the REQUIRED manual smoke test (step 4 of the smoke test checklist).
+    /// `AudioModel.init()` starts CoreAudio/AVCapture, making headless XCTest impossible here.
+    public func applyProfile(_ profile: VoiceProfile) {
+        isApplyingPreset = true
+        // Apply DSP suppression knobs from the profile's stored values (not re-derived from preset,
+        // in case the user had manually overridden them before saving).
+        suppressionStrength = profile.suppressionStrength
+        attenuationLimitDb = profile.attenuationLimitDb
+        outputGainValue = profile.outputGainValue
+        dspEngine.suppressionStrength = suppressionStrength
+        dspEngine.attenuationLimitDb = attenuationLimitDb
+        dspEngine.outputGain = outputGainValue
+        // Apply voice chain settings.
+        voicePolishEnabled = profile.voicePolishEnabled
+        clarityLevel = profile.clarityLevel
+        if let mouthNoise = profile.mouthNoiseLevel {
+            mouthNoiseLevel = mouthNoise
+        }
+        if let inputVolume = profile.inputVolumeValue {
+            inputVolumeValue = SmartLevelController.clampInputVolume(inputVolume)
+        }
+        if let smartLevel = profile.smartLevelEnabled {
+            smartLevelEnabled = smartLevel
+        }
+        // Apply the preset last so selectedPreset.didSet fires with isApplyingPreset=true,
+        // suppressing the re-entry into applyPreset and applyVoiceChain.
+        selectedPreset = profile.preset
+        isApplyingPreset = false
+        // Single reconfigure with the final restored state — matches loadSettings() pattern.
+        applyVoiceChain()
+        persistSettings()
+    }
+
+    /// Delete a saved profile by ID and persist.
+    public func deleteProfile(id: UUID) {
+        var store = VoiceProfileStore.from(profiles)
+        store.remove(id: id)
+        profiles = store.profiles
+        persistProfiles()
+    }
+
+    /// Rename a saved profile and persist.
+    public func renameProfile(id: UUID, to newName: String) {
+        var store = VoiceProfileStore.from(profiles)
+        store.rename(id: id, to: newName)
+        profiles = store.profiles
+        persistProfiles()
+    }
+
+    /// Serialize the current profiles array to UserDefaults under `mv.profiles`.
+    private func persistProfiles() {
+        guard let data = try? VoiceProfileStore.from(profiles).encodeToJSON() else { return }
+        UserDefaults.standard.set(data, forKey: PrefKey.profiles)
+    }
+
     private func persistSettings() {
         let d = UserDefaults.standard
         d.set(selectedPreset.rawValue, forKey: PrefKey.preset)
@@ -391,6 +482,13 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
 
     private func loadSettings() {
         let d = UserDefaults.standard
+        // Load saved profiles BEFORE any early return. Profiles persist independently of
+        // the Tier 1 settings: saveCurrentAsProfile writes only `mv.profiles` (never `mv.preset`),
+        // so a user who saved a profile from the default state (no `mv.preset` yet) must still
+        // see it on relaunch. Tolerant: corrupt/absent → empty array.
+        if let data = d.data(forKey: PrefKey.profiles) {
+            profiles = VoiceProfileStore.decodeSafe(from: data).profiles
+        }
         guard let raw = d.string(forKey: PrefKey.preset),
               let preset = VoicePreset(rawValue: raw) else {
             // First launch: keep defaults (Meeting) and push them to the DSP.

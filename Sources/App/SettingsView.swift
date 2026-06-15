@@ -33,12 +33,18 @@ struct SettingsView: View {
 struct GeneralSettingsView: View {
     @ObservedObject var audioModel: AudioModel
 
+    @State private var isShowingSaveSheet = false
+    @State private var newProfileName: String = ""
+    @State private var renameTargetID: UUID? = nil
+    @State private var renameText: String = ""
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 brandedHeader
                 suppressionCard
                 inputVolumeCard
+                profilesCard
                 gainCard
                 incomingCard
                 footer
@@ -207,6 +213,137 @@ struct GeneralSettingsView: View {
             }
         }
         .nnCard()
+    }
+
+    // MARK: - Voice Profiles
+
+    private var profilesCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                sectionHeader("Voice Profiles", systemImage: "person.crop.rectangle.stack")
+                Spacer()
+                Button {
+                    newProfileName = ""
+                    isShowingSaveSheet = true
+                } label: {
+                    Label("Save Current", systemImage: "plus")
+                        .font(.caption)
+                }
+                .controlSize(.small)
+            }
+
+            if audioModel.profiles.isEmpty {
+                Text("No profiles saved yet. Dial in your settings and tap \"Save Current\".")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ForEach(audioModel.profiles) { profile in
+                    profileRow(profile)
+                    if profile.id != audioModel.profiles.last?.id {
+                        Divider()
+                    }
+                }
+            }
+        }
+        .nnCard()
+        // "Save Current" sheet — presented as a SwiftUI sheet over the settings window.
+        .sheet(isPresented: $isShowingSaveSheet) {
+            saveProfileSheet
+        }
+    }
+
+    private func profileRow(_ profile: VoiceProfile) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(profile.name)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Text(profile.preset.label)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            Button("Recall") {
+                audioModel.applyProfile(profile)
+            }
+            .controlSize(.small)
+            .buttonStyle(.bordered)
+
+            Button {
+                renameTargetID = profile.id
+                renameText = profile.name
+            } label: {
+                Image(systemName: "pencil")
+            }
+            .controlSize(.small)
+            .help("Rename this profile")
+            .popover(isPresented: Binding(
+                get: { renameTargetID == profile.id },
+                set: { if !$0 { renameTargetID = nil } }
+            )) {
+                renamePopover(for: profile)
+            }
+
+            Button(role: .destructive) {
+                audioModel.deleteProfile(id: profile.id)
+            } label: {
+                Image(systemName: "trash")
+            }
+            .controlSize(.small)
+            .help("Delete this profile")
+        }
+    }
+
+    private var saveProfileSheet: some View {
+        VStack(spacing: 16) {
+            Text("Save Profile")
+                .font(.headline)
+            Text("Name this snapshot of your current settings.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            TextField("Profile name", text: $newProfileName)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: 260)
+                .onSubmit { commitSave() }
+            HStack {
+                Button("Cancel") { isShowingSaveSheet = false }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button("Save") { commitSave() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(newProfileName.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 300)
+    }
+
+    private func renamePopover(for profile: VoiceProfile) -> some View {
+        HStack(spacing: 8) {
+            TextField("New name", text: $renameText)
+                .textFieldStyle(.roundedBorder)
+                .frame(minWidth: 160)
+                .onSubmit { commitRename(id: profile.id) }
+            Button("OK") { commitRename(id: profile.id) }
+                .controlSize(.small)
+                .disabled(renameText.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+        .padding(10)
+    }
+
+    private func commitSave() {
+        let trimmed = newProfileName.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        audioModel.saveCurrentAsProfile(name: trimmed)
+        isShowingSaveSheet = false
+    }
+
+    private func commitRename(id: UUID) {
+        let trimmed = renameText.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        audioModel.renameProfile(id: id, to: trimmed)
+        renameTargetID = nil
     }
 
     // MARK: Output gain

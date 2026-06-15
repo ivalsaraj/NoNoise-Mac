@@ -6,7 +6,7 @@
 
 **Architecture:** A `VoiceProfile` Codable struct (versioned, tolerant of unknown fields) and a `VoiceProfileStore` pure value type (encoding, decoding, CRUD) live entirely in `Sources/Core` with no UI or CoreAudio dependency, making them headless XCTest-able. `AudioModel` owns a `@Published profiles` collection and an `applyProfile(_:)` method that goes through the existing `applyPreset` + `applyVoiceChain` path (guarded by `isApplyingPreset`) so the live engine and SwiftUI UI update correctly. The collection is serialized as a JSON array and persisted under the single new UserDefaults key `mv.profiles`. UI lives in `SettingsView` as a dedicated profiles card.
 
-**Extensibility mandate:** The schema uses a `version` Int field and Codable optional fields throughout so that in-flight plans (Metering & Loudness: LUFS target + normalization toggle; Mouth-noise Finishers: de-plosive + de-click levels) add fields by adding new optionals to `VoiceProfile` — no migration, no schema break, no existing profiles invalidated.
+**Extensibility mandate:** The schema uses a `version` Int field and Codable optional fields so new profile-captured settings can be added by appending optionals to `VoiceProfile` — no migration, no schema break, no existing profiles invalidated. In the integrated build, Mouth Noise, Input Volume, and Smart Level are optional profile fields; Metering & Loudness remains the next extension point.
 
 **Tech Stack:** Swift 5.9, SwiftUI, Swift Package Manager, XCTest (pure logic tests, headless), JSONEncoder/JSONDecoder with `.convertFromSnakeCase` / `.convertToSnakeCase`.
 
@@ -24,9 +24,9 @@ The current model exposes four global presets (Meeting / Podcast / Tutorial / Cu
 
 ### The extensibility constraint
 
-Two in-flight plans will add new user-tunable settings that belong in a profile snapshot:
+Profile-captured settings added after the original profile design belong in optional fields:
+- **Mouth Noise / Input Volume / Smart Level**: integrated as optional fields so older saved JSON still decodes.
 - **Metering & Loudness plan**: a `lufsTarget: Float?` and `normalizationEnabled: Bool?`
-- **Mouth-noise Finishers plan**: a `deplosiveLevel: Float?` and `declickLevel: Float?`
 
 The schema must absorb these by adding optional fields with no migration path required. The decoding strategy is: `JSONDecoder` with `keyDecodingStrategy = .convertFromSnakeCase`, all future fields declared `var fieldName: Type? = nil`, so unknown JSON keys are silently ignored and missing JSON keys default to `nil`. A `version: Int` field allows breaking migrations if they ever become necessary in a v2 schema.
 
@@ -1139,8 +1139,8 @@ and three new `AudioModel` methods (`saveCurrentAsProfile`, `applyProfile`, `del
 path goes through `isApplyingPreset = true … = false` to prevent spurious `.custom` flips or
 redundant `applyVoiceChain` / `persistSettings` calls mid-apply. UI: a Profiles card in
 `GeneralSettingsView` with Save Current / Recall / Rename / Delete per row. Schema is forward-
-compatible: Metering & Loudness and Mouth-noise Finisher plans can add optional fields with no
-migration.
+compatible: Mouth Noise, Input Volume, and Smart Level are optional profile fields, and future
+Metering & Loudness fields can be added without migration.
 ```
 
 - [ ] **Step 3: Append to `docs/knowledge/knowledge1.md`**
@@ -1150,8 +1150,8 @@ Prepend a `[DECISION]` entry at the top (after the `# Knowledge Log` header):
 ```markdown
 ### [DECISION] 2026-06-15 — Voice Profiles: extensible versioned schema via optional Codable fields
 
-**Problem**: Adding new user-tunable settings (Metering & Loudness LUFS target, Mouth-noise
-de-plosive level) would break saved profiles if the schema required all fields to be present.
+**Problem**: Adding new user-tunable settings (Mouth Noise, Input Volume, Smart Level, future
+Metering & Loudness) would break saved profiles if the schema required all fields to be present.
 **Decision**: Declare all extension-point fields as `var field: Type? = nil` in `VoiceProfile`.
 Swift's Codable synthesis silently ignores unknown JSON keys (forward-compat) and decodes missing
 optional keys as `nil` (backward-compat). A `version: Int = 1` field provides a hook for future
@@ -1204,8 +1204,22 @@ The headless suite does not exercise the live audio path or SwiftUI. After imple
 
 ## Self-Review (completed during authoring)
 
-- **Spec coverage:** Named profiles (save/recall/rename/delete) ✓ Tasks 2–5. Serialized to `mv.profiles` ✓ Task 3. All 6 user-tunable settings captured ✓ `VoiceProfile` struct. Extensible schema with version + optionals ✓ Task 1, explicitly called out for in-flight plans. Apply goes through `isApplyingPreset` guard ✓ Task 3 `applyProfile`. UI list in Settings ✓ Task 5. `VoicePreset` and `ClarityLevel` conformance to `Codable` ✓ Task 1 Step 0 (prerequisite for `VoiceProfile: Codable` synthesis).
+- **Spec coverage:** Named profiles (save/recall/rename/delete) ✓ Tasks 2–5. Serialized to `mv.profiles` ✓ Task 3. Core voice settings plus optional Mouth Noise, Input Volume, and Smart Level fields captured ✓ `VoiceProfile` struct. Extensible schema with version + optionals ✓ Task 1, explicitly called out for in-flight plans. Apply goes through `isApplyingPreset` guard ✓ Task 3 `applyProfile`. UI list in Settings ✓ Task 5. `VoicePreset`, `ClarityLevel`, and `MouthNoiseLevel` conformance to `Codable` ✓.
 - **Invariant coverage:** `isApplyingPreset` re-entrancy documented and enforced in Task 3 Step 3 with a step-by-step breakdown of the exact apply order. `mv.*` namespace preserved — only one new key `mv.profiles` added. No "MetalVoice"/"Ghostkwebb" appears anywhere in Sources/. All paths are repo-relative. `VoiceProfileStore.profiles` `private(set)` invariant respected — `AudioModel` never assigns to `store.profiles` directly; it uses `upsert`/`remove`/`rename` methods and `VoiceProfileStore.from(_:)` exclusively.
 - **TDD granularity:** Tasks 1 and 2 follow strict red → green → commit TDD. Tasks 3 and 5 are `swift build`-verified (cannot unit-test `AudioModel` or SwiftUI headlessly — matches the precedent set by the broadcast voice plan's Task 5 and Task 6). Task 4 adds pure serialization and insertion-order round-trip regression tests — it does NOT claim to test `AudioModel.applyProfile` (which requires a live CoreAudio engine); that path is verified exclusively by the manual smoke test.
-- **Extensibility:** the three future fields (`lufsTarget`, `normalizationEnabled`, `deplosiveLevel`, `declickLevel`) are documented with commented-out stubs in `VoiceProfile.swift` and the decision is captured in `knowledge1.md`.
+- **Extensibility:** Mouth Noise, Input Volume, and Smart Level are integrated as optional fields; future Metering & Loudness fields (`lufsTarget`, `normalizationEnabled`) remain documented as optional extension points in `VoiceProfile.swift` and the decision is captured in `knowledge1.md`.
 - **No placeholder code:** every step shows complete, copy-pasteable implementations.
+
+---
+
+## Post-Implementation Amendments
+
+Captured during the post-implementation Codex code review (gpt-5.5), so this plan stays a learning artifact.
+
+### Amendment 1 — Task 3 Step 4 load placement was a plan gap (IMPORTANT, fixed)
+
+- **Gap:** Step 4 instructed adding the `mv.profiles` decode *at the end of `loadSettings()`, after `applyVoiceChain()`*. But `loadSettings()` has an early `return` when `mv.preset` is absent (the first-launch/default path). The decode therefore never ran on that path.
+- **Why it matters:** `saveCurrentAsProfile` persists ONLY `mv.profiles` (via `persistProfiles()`); it never writes `mv.preset`. A user who saved a profile from the default state (no `mv.preset` yet) had `mv.profiles` but no `mv.preset`, so on relaunch the early return skipped the decode and the saved profile silently disappeared from the UI (data was intact in `UserDefaults`, just not loaded).
+- **Root cause (why the plan missed it):** the plan treated profile-loading as part of the normal settings-restore flow, not accounting for `mv.profiles` being persisted independently of the Tier 1 keys.
+- **Fix applied:** the decode now runs at the TOP of `loadSettings()`, before the `guard let raw = d.string(forKey: PrefKey.preset)` early return, so profiles load on every launch path. Captured as a `[GOTCHA]` in `docs/knowledge/knowledge1.md`.
+- **Rule for future plans:** load independently-persisted collections before any other key's early-return; never gate one persistence key's read behind another key's presence.

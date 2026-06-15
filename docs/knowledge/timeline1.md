@@ -92,6 +92,18 @@ Chronological log of notable changes. Newest on top.
   (`Input too loud`, `Output clipping`, source-mic clipping) and runs Smart Level via the pure
   `SmartLevelController` helper. UI in Settings and popover status card.
 
+### 2026-06-15 — Voice Profiles: save/recall/rename/delete named setting snapshots
+
+Added a **Voice Profiles** system: `VoiceProfile` (versioned `Codable` struct, extensible via
+optional fields), `VoiceProfileStore` (pure CRUD + JSON serialization, headless XCTest-able),
+and three new `AudioModel` methods (`saveCurrentAsProfile`, `applyProfile`, `deleteProfile`,
+`renameProfile`). Profiles are persisted as a JSON array under `mv.profiles`. The `applyProfile`
+path goes through `isApplyingPreset = true … = false` to prevent spurious `.custom` flips or
+redundant `applyVoiceChain` / `persistSettings` calls mid-apply. UI: a Profiles card in
+`GeneralSettingsView` with Save Current / Recall / Rename / Delete per row. Schema is forward-
+compatible: Mouth Noise, Input Volume, and Smart Level are optional profile fields, and future
+Metering & Loudness fields can be added without migration.
+
 ### 2026-06-15 — Input Volume & Smart Level plan
 - Added `docs/plans/2026-06-15-input-volume-smart-level.md`, a focused plan for hot-mic protection:
   a macOS-worded **Input Volume** control applied pre-DSP, cheap input/output sample-peak detection,
