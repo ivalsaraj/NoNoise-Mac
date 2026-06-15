@@ -69,8 +69,32 @@ jobs:
           echo "is_stable=$IS_STABLE" >> "$GITHUB_OUTPUT"
           echo "target_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve updater eligibility
+        id: updater
+        run: |
+          TAG="${{ steps.release_target.outputs.tag }}"
+          IS_STABLE="${{ steps.release_target.outputs.is_stable }}"
+          if [ "$IS_STABLE" = "true" ]; then
+            echo "is_updater_release=false" >> "$GITHUB_OUTPUT"
+            echo "Rolling main build — excluded from the updater appcast."
+            exit 0
+          fi
+          if VERS=$(./scripts/version-from-tag.sh "$TAG"); then
+            eval "$VERS"   # expected short / build, derived from the tag
+            echo "is_updater_release=true" >> "$GITHUB_OUTPUT"
+            echo "expected_short=$short" >> "$GITHUB_OUTPUT"
+            echo "expected_build=$build" >> "$GITHUB_OUTPUT"
+            echo "Updater release: expected $short (build $build)"
+          else
+            echo "is_updater_release=false" >> "$GITHUB_OUTPUT"
+            echo "Tag $TAG is not a stable vX.Y.Z release — excluded from the updater appcast."
+          fi
+
       - name: Show Swift version
         run: swift --version
+
+      - name: Test updater version helper
+        run: ./scripts/version-from-tag.test.sh
 
       - name: Test
         run: swift test
@@ -145,3 +169,68 @@ jobs:
               --title "NoNoise Mac $TAG" \
               --notes-file /tmp/release-notes.md
           fi
+
+      - name: Generate, verify & publish Sparkle appcast
+        if: steps.updater.outputs.is_updater_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          EXPECTED_SHORT: ${{ steps.updater.outputs.expected_short }}
+          EXPECTED_BUILD: ${{ steps.updater.outputs.expected_build }}
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.release_target.outputs.tag }}"
+          TARGET_SHA="${{ steps.release_target.outputs.target_sha }}"
+          ZIP="release-assets/NoNoiseMac-${TAG}.app.zip"
+          FEED_URL="https://github.com/ivalsaraj/NoNoise-Mac/releases/download/appcast/appcast.xml"
+
+          # Sparkle CLI tools come from the SwiftPM build artifacts.
+          GEN="$(find .build -type f -name generate_appcast | head -1)"
+          [ -n "$GEN" ] || { echo "generate_appcast not found in .build"; exit 1; }
+
+          # Private EdDSA key (secret) -> temp file for --ed-key-file.
+          KEYFILE="$(mktemp)"; trap 'rm -f "$KEYFILE"' EXIT
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$KEYFILE"
+
+          # generate_appcast reads the (release.sh-stamped) Info.plist inside the zip for the version
+          # fields and signs the archive; --download-url-prefix sets the enclosure to this release's asset.
+          mkdir -p sparkle-feed
+          cp "$ZIP" sparkle-feed/
+          "$GEN" --ed-key-file "$KEYFILE" \
+                 --download-url-prefix "https://github.com/ivalsaraj/NoNoise-Mac/releases/download/${TAG}/" \
+                 sparkle-feed/
+          APPCAST="sparkle-feed/appcast.xml"
+          [ -f "$APPCAST" ] || { echo "appcast.xml was not generated"; exit 1; }
+
+          # --- Assertions: tag <-> committed plist <-> appcast <-> asset must all agree. ---
+          rm -rf /tmp/zipcheck && unzip -o -q "$ZIP" -d /tmp/zipcheck
+          PLIST="/tmp/zipcheck/NoNoiseMac.app/Contents/Info.plist"
+          ZBUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST")
+          ZSHORT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST")
+          ZFEED=$(/usr/libexec/PlistBuddy -c "Print :SUFeedURL" "$PLIST")
+          ACVER=$(xmllint --xpath 'string(//*[local-name()="version"])' "$APPCAST")
+          ACSHORT=$(xmllint --xpath 'string(//*[local-name()="shortVersionString"])' "$APPCAST")
+          ACURL=$(xmllint --xpath 'string(//*[local-name()="enclosure"]/@url)' "$APPCAST")
+          # committed plist must match what release.sh should have stamped for this tag
+          [ "$ZBUILD" = "$EXPECTED_BUILD" ] || { echo "committed CFBundleVersion $ZBUILD != expected $EXPECTED_BUILD (was release.sh used?)"; exit 1; }
+          [ "$ZSHORT" = "$EXPECTED_SHORT" ] || { echo "committed short $ZSHORT != expected $EXPECTED_SHORT"; exit 1; }
+          # appcast must match the committed plist
+          [ "$ACVER" = "$ZBUILD" ]   || { echo "appcast sparkle:version $ACVER != plist $ZBUILD"; exit 1; }
+          [ "$ACSHORT" = "$ZSHORT" ] || { echo "appcast shortVersionString $ACSHORT != plist $ZSHORT"; exit 1; }
+          # feed URL + enclosure must be exact
+          [ "$ZFEED" = "$FEED_URL" ] || { echo "shipped SUFeedURL $ZFEED != $FEED_URL"; exit 1; }
+          case "$ACURL" in
+            *"NoNoiseMac-${TAG}.app.zip") echo "enclosure URL ok: $ACURL" ;;
+            *) echo "appcast enclosure URL '$ACURL' must end with NoNoiseMac-${TAG}.app.zip"; exit 1 ;;
+          esac
+
+          # --- Publish appcast.xml to the fixed `appcast` release tag (auto-create first time). ---
+          if gh release view appcast >/dev/null 2>&1; then
+            gh release upload appcast "$APPCAST" --clobber
+          else
+            gh release create appcast "$APPCAST" \
+              --title "Sparkle update feed" \
+              --notes "Auto-update appcast for NoNoise Mac. Managed by CI — do not delete." \
+              --target "$TARGET_SHA"
+          fi
+          echo "Published appcast for $ZSHORT (build $ZBUILD)."
