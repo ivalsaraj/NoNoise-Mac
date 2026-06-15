@@ -26,8 +26,8 @@ struct ContentView: View {
         .frame(width: 320)
         // Drive the gated UI-meter publish loop only while the popover is on screen. The control
         // pump (Smart Level + loudness) keeps running always — see AudioModel.beginMeterObservation.
-        .onAppear { audioModel.beginMeterObservation() }
-        .onDisappear { audioModel.endMeterObservation() }
+        .onAppear { audioModel.beginMeterObservation(.popover) }
+        .onDisappear { audioModel.endMeterObservation(.popover) }
     }
 
     // MARK: - Header
@@ -455,11 +455,11 @@ class WindowManager {
             // when the popover is closed. Reference-counted in AudioModel, so this composes with
             // the popover's own begin/end. Tied to the window lifecycle (begin on create, end on
             // willClose) rather than SwiftUI onDisappear, which is unreliable for a reused NSPanel.
-            model.beginMeterObservation()
+            model.beginMeterObservation(.settings)
 
             NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: panel, queue: nil) { [weak model] _ in
                 settingsWindow = nil
-                model?.endMeterObservation()
+                model?.endMeterObservation(.settings)
             }
         }
         settingsWindow?.makeKeyAndOrderFront(nil)

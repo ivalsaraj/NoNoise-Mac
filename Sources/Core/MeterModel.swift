@@ -2,7 +2,7 @@ import Foundation
 import Combine
 
 /// UI-facing live-meter state, published at ~25 Hz **only while a meter view is on screen**
-/// (gated via `AudioModel.beginMeterObservation()` / `endMeterObservation()`).
+/// (gated via `AudioModel.beginMeterObservation(_:)` / `endMeterObservation(_:)`).
 ///
 /// This is the telemetry-isolation half of the menu-bar performance fix. The high-frequency
 /// meter fields live here, NOT on `AudioModel`, so `AudioModel.objectWillChange` no longer fires

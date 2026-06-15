@@ -2,6 +2,15 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Menu-bar perf: meter observation made idempotent per source (Codex review)
+- Codex code review (gpt-5.5, IMPORTANT) flagged that `begin/endMeterObservation` used a blind
+  counter, so a duplicate popover `onAppear` or a missed `onDisappear` drifted `meterObserverCount`
+  permanently and could leave the gated UI-publish timer running with no visible meter surface.
+- Fix: track active surfaces in a `Set<MeterObserver>` (`.popover` / `.settings`) and run the timer
+  iff the set is non-empty. Duplicate begins are no-ops (Set insert) and the state self-heals on the
+  next clean begin/end cycle. Call sites pass their source. `swift test` (203) + `swift build` pass.
+- `Sources/Core/AudioModel.swift`, `Sources/App/ContentView.swift`, `Sources/Core/MeterModel.swift`.
+
 ### 2026-06-15 — Menu-bar perf: split 25 Hz telemetry into a control pump + gated UI publish
 - Fixed sluggish menu-bar popover open + laggy AI toggle. **Root cause:** a 25 Hz `@Published`
   telemetry storm on `AudioModel` — the single meter timer wrote ~11 `@Published` fields every

@@ -232,10 +232,18 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     //  • controlPumpTimer — ALWAYS-ON ~25 Hz; owns the t* read-and-reset and runs BOTH audio
     //    control loops (Smart Level + loudness normalization). Non-publishing → zero SwiftUI churn.
     //  • uiPublishTimer — ~25 Hz but GATED to meter-view visibility; copies the snapshot into
-    //    `meterModel`. Reference-counted via begin/endMeterObservation so it never double-starts.
+    //    `meterModel`. Driven by an active-source set so it never double-starts or leaks.
     private var controlPumpTimer: Timer?
     private var uiPublishTimer: Timer?
-    private var meterObserverCount = 0
+    /// A live-meter surface that wants the gated UI-publish loop running. One case per surface so
+    /// observation is tracked per-source (idempotent) rather than by a drift-prone counter.
+    public enum MeterObserver { case popover, settings }
+    /// Meter surfaces currently on screen. The gated UI-publish timer runs iff this set is
+    /// non-empty. A Set keyed by source (NOT a blind counter) makes the lifecycle idempotent:
+    /// a duplicate begin for the same source is a no-op, and the state self-heals on the next
+    /// clean begin/end cycle even if a SwiftUI `onDisappear` / window `willClose` was missed —
+    /// so the timer can never be permanently leaked the way a drifting counter could.
+    private var activeMeterObservers: Set<MeterObserver> = []
     private var consecutiveTrimmedHotTicks = 0
     private var consecutiveOutputClipTicks = 0
     private var lastSmartLevelAdjustTime: Date?
@@ -1170,29 +1178,31 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         updateSmartLevel()
     }
 
-    /// Begin observing the live meters (called from a meter view's `onAppear`). Reference-counted
-    /// so the popover and the Settings window can both observe through ONE shared UI-publish timer
-    /// (idempotent — reopening never spawns a second timer). Seeds `meterModel` from the latest
-    /// snapshot BEFORE the first timed publish so the first visible frame after a closed interval
-    /// is correct, not stale.
-    public func beginMeterObservation() {
-        meterObserverCount += 1
-        guard meterObserverCount == 1 else { return }
+    /// Begin observing the live meters for `source` (e.g. the popover's `onAppear`). The popover
+    /// and the Settings window observe through ONE shared UI-publish timer, started on the
+    /// empty → non-empty transition. Idempotent: a duplicate begin for the same source is a no-op
+    /// (Set insert), so a stray/repeated `onAppear` can never spawn a second timer or inflate the
+    /// state. Seeds `meterModel` from the latest snapshot BEFORE the first timed publish so the
+    /// first visible frame after a closed interval is correct, not stale.
+    public func beginMeterObservation(_ source: MeterObserver) {
+        let wasEmpty = activeMeterObservers.isEmpty
+        activeMeterObservers.insert(source)
+        guard wasEmpty, uiPublishTimer == nil else { return }
         meterModel.apply(meterSnapshot)
-        uiPublishTimer?.invalidate()
         uiPublishTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             self.meterModel.apply(self.meterSnapshot)
         }
     }
 
-    /// End observing the live meters (called from a meter view's `onDisappear`). Stops the
-    /// UI-publish timer only when the LAST observer goes away; the always-on control pump keeps
+    /// End observing the live meters for `source` (e.g. the popover's `onDisappear`). Stops the
+    /// UI-publish timer only when the LAST surface goes away; the always-on control pump keeps
     /// running so Smart Level + loudness normalization stay live with every meter view closed.
-    public func endMeterObservation() {
-        guard meterObserverCount > 0 else { return }
-        meterObserverCount -= 1
-        guard meterObserverCount == 0 else { return }
+    /// Idempotent: ending an inactive source is a no-op, and because each source is tracked
+    /// independently the state self-heals on the next clean cycle even if an end was missed.
+    public func endMeterObservation(_ source: MeterObserver) {
+        guard activeMeterObservers.remove(source) != nil else { return }
+        guard activeMeterObservers.isEmpty else { return }
         uiPublishTimer?.invalidate()
         uiPublishTimer = nil
     }
