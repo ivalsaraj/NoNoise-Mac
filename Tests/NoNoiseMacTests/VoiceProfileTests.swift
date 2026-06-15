@@ -114,4 +114,131 @@ final class VoiceProfileTests: XCTestCase {
         let b = VoiceProfile.makeDefault(name: "B")
         XCTAssertNotEqual(a.id, b.id)
     }
+
+    // MARK: - VoiceProfileStore CRUD
+
+    func testSaveAddsProfile() {
+        var store = VoiceProfileStore()
+        let p = VoiceProfile.makeDefault(name: "Podcast")
+        store.save(p)
+        XCTAssertEqual(store.profiles.count, 1)
+        XCTAssertEqual(store.profiles.first?.name, "Podcast")
+    }
+
+    func testSaveUpdatesExistingProfile() {
+        var store = VoiceProfileStore()
+        var p = VoiceProfile.makeDefault(name: "Original")
+        store.save(p)
+        p.name = "Updated"
+        store.save(p)
+        // Same UUID → update in place, not duplicate.
+        XCTAssertEqual(store.profiles.count, 1)
+        XCTAssertEqual(store.profiles.first?.name, "Updated")
+    }
+
+    func testDeleteRemovesProfile() {
+        var store = VoiceProfileStore()
+        let p = VoiceProfile.makeDefault(name: "To Delete")
+        store.save(p)
+        store.delete(id: p.id)
+        XCTAssertTrue(store.profiles.isEmpty)
+    }
+
+    func testDeleteNonExistentIDIsNoOp() {
+        var store = VoiceProfileStore()
+        store.save(VoiceProfile.makeDefault(name: "Keep"))
+        store.delete(id: UUID())   // random ID not in store
+        XCTAssertEqual(store.profiles.count, 1)
+    }
+
+    func testRenameUpdatesName() {
+        var store = VoiceProfileStore()
+        let p = VoiceProfile.makeDefault(name: "Old Name")
+        store.save(p)
+        store.rename(id: p.id, to: "New Name")
+        XCTAssertEqual(store.profiles.first?.name, "New Name")
+    }
+
+    func testRenameNonExistentIDIsNoOp() {
+        var store = VoiceProfileStore()
+        store.save(VoiceProfile.makeDefault(name: "Safe"))
+        store.rename(id: UUID(), to: "Ghost")
+        XCTAssertEqual(store.profiles.first?.name, "Safe")
+    }
+
+    func testProfileByIDReturnsCorrectProfile() {
+        var store = VoiceProfileStore()
+        let a = VoiceProfile.makeDefault(name: "A")
+        let b = VoiceProfile.makeDefault(name: "B")
+        store.save(a)
+        store.save(b)
+        XCTAssertEqual(store.profile(id: a.id)?.name, "A")
+        XCTAssertEqual(store.profile(id: b.id)?.name, "B")
+        XCTAssertNil(store.profile(id: UUID()))
+    }
+
+    func testOrderIsStableAfterMultipleInserts() {
+        var store = VoiceProfileStore()
+        let names = ["Zzz", "Aaa", "Mmm"]
+        names.forEach { store.save(VoiceProfile.makeDefault(name: $0)) }
+        // Insertion order preserved (not sorted).
+        XCTAssertEqual(store.profiles.map(\.name), names)
+    }
+
+    // MARK: - VoiceProfileStore serialization round-trip
+
+    func testStoreEncodesAndDecodesProfiles() throws {
+        var store = VoiceProfileStore()
+        store.save(VoiceProfile(
+            name: "Interview",
+            preset: .podcast,
+            suppressionStrength: 0.9,
+            attenuationLimitDb: 24.0,
+            outputGainValue: 1.1,
+            voicePolishEnabled: true,
+            clarityLevel: .low
+        ))
+        let data = try store.encodeToJSON()
+        let restored = try VoiceProfileStore.decode(from: data)
+        XCTAssertEqual(restored.profiles.count, 1)
+        XCTAssertEqual(restored.profiles.first?.name, "Interview")
+        XCTAssertEqual(restored.profiles.first?.preset, .podcast)
+        XCTAssertEqual(restored.profiles.first?.clarityLevel, .low)
+    }
+
+    func testDecodeEmptyArrayReturnsEmptyStore() throws {
+        let data = "[]".data(using: .utf8)!
+        let store = try VoiceProfileStore.decode(from: data)
+        XCTAssertTrue(store.profiles.isEmpty)
+    }
+
+    func testDecodeCorruptJSONReturnsEmptyStore() {
+        let bad = "NOT_JSON".data(using: .utf8)!
+        let store = VoiceProfileStore.decodeSafe(from: bad)
+        XCTAssertTrue(store.profiles.isEmpty, "corrupt JSON must not crash — return empty store")
+    }
+
+    /// Profiles with unknown/future fields survive a store decode round-trip.
+    func testDecodeToleratesProfilesWithUnknownFields() throws {
+        let json = """
+        [
+          {
+            "id": "00000000-0000-0000-0000-000000000099",
+            "version": 1,
+            "name": "Future",
+            "preset": "tutorial",
+            "suppression_strength": 0.8,
+            "attenuation_limit_db": 40.0,
+            "output_gain_value": 1.0,
+            "voice_polish_enabled": true,
+            "clarity_level": "high",
+            "lufs_target": -16.0
+          }
+        ]
+        """.data(using: .utf8)!
+        let store = try VoiceProfileStore.decode(from: json)
+        XCTAssertEqual(store.profiles.count, 1)
+        XCTAssertEqual(store.profiles.first?.name, "Future")
+        XCTAssertEqual(store.profiles.first?.preset, .tutorial)
+    }
 }
