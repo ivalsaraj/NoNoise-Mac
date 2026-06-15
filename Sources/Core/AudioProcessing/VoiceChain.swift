@@ -67,6 +67,10 @@ public struct VoiceChainSettings: Sendable, Equatable {
     public var compMakeupDb: Float
     public var limiterCeilingDb: Float
     public var clarity: ClarityLevel = .off
+    /// Loudness normalization is on. An independent activation reason: when true the
+    /// chain runs (limiter + pre-limiter make-up gain) even with polish and clarity
+    /// off, so normalization works in Meeting mode. Default false → no behavior change.
+    public var loudnessActive: Bool = false
 
     public static let disabled = VoiceChainSettings(
         enabled: false, highPassHz: 80, lowShelfHz: 180, lowShelfDb: 0,
@@ -90,6 +94,10 @@ public final class VoiceChain {
     private var enabled = false
     private var clarity: ClarityLevel = .off
     private var active = false
+    /// Loudness-normalization make-up gain (linear). Written from main (lock-free
+    /// scalar; atomic on arm64), read on the render thread. 1.0 = no-op. Applied
+    /// just BEFORE the limiter so the ceiling still bounds the boosted signal.
+    private var loudnessGain: Float = 1
 
     public init(sampleRate: Float = 48000) {
         self.sampleRate = sampleRate
@@ -101,7 +109,7 @@ public final class VoiceChain {
         let priorClarity = clarity
         enabled = s.enabled
         clarity = s.clarity
-        active = s.enabled || s.clarity != .off
+        active = s.enabled || s.clarity != .off || s.loudnessActive
         guard active else { return }
         // Clean start when the chain becomes active (don't inherit frozen state).
         // Switching between two *active* polish settings is intentionally bumpless.
@@ -156,6 +164,10 @@ public final class VoiceChain {
     public var isEnabled: Bool { enabled }
     public var isActive: Bool { active }
 
+    /// Set the loudness make-up gain. Plain scalar store — cheaper than a full
+    /// configure; called from the main-thread loudness timer.
+    public func setLoudnessGain(_ g: Float) { loudnessGain = g }
+
     /// Process `count` samples in place. No-op when inactive. Order:
     /// HP → shelves → presence → de-esser → compressor → limiter. Polish stages
     /// run only when `enabled`; clarity stages run only when `clarity != .off`;
@@ -178,6 +190,7 @@ public final class VoiceChain {
             if doPolish {
                 x = comp.process(x)
             }
+            x *= loudnessGain               // loudness normalization make-up (pre-limiter)
             x = limiter.process(x)
             buffer[i] = x
         }
