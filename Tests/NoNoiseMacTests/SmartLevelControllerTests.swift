@@ -22,6 +22,45 @@ final class SmartLevelControllerTests: XCTestCase {
         XCTAssertFalse(SmartLevelController.isClipping(SmartLevelController.measurePeak(trimmed)))
     }
 
+    func testInputTelemetryMeterReflectsTrimmedSignal() {
+        var samples = [Float](repeating: 0.8, count: 64)
+
+        let t = samples.withUnsafeMutableBufferPointer {
+            SmartLevelController.applyInputVolumeAndMeasure($0.baseAddress!, count: $0.count, volume: 0.5)
+        }
+
+        XCTAssertEqual(t.rawPeak, 0.8, accuracy: 1e-6)
+        XCTAssertEqual(t.trimmedPeak, 0.4, accuracy: 1e-6)
+        XCTAssertEqual(t.trimmedRMS, 0.4, accuracy: 1e-6)
+        XCTAssertTrue(samples.allSatisfy { abs($0 - 0.4) < 1e-6 })
+    }
+
+    func testInputTelemetryAtFortyThreePercentFallsBelowRawLevel() {
+        var samples = [Float](repeating: 0.9, count: 64)
+
+        let t = samples.withUnsafeMutableBufferPointer {
+            SmartLevelController.applyInputVolumeAndMeasure($0.baseAddress!, count: $0.count, volume: 0.43)
+        }
+
+        XCTAssertEqual(t.rawPeak, 0.9, accuracy: 1e-6)
+        XCTAssertEqual(t.trimmedPeak, 0.387, accuracy: 1e-4)
+        XCTAssertEqual(t.trimmedRMS, 0.387, accuracy: 1e-4)
+        XCTAssertLessThan(t.trimmedRMS, t.rawPeak)
+    }
+
+    func testRawSourceClipAndTrimmedMeterStaySeparate() {
+        var samples = [Float](repeating: 1.0, count: 64)
+
+        let t = samples.withUnsafeMutableBufferPointer {
+            SmartLevelController.applyInputVolumeAndMeasure($0.baseAddress!, count: $0.count, volume: 0.43)
+        }
+
+        XCTAssertTrue(SmartLevelController.isSourceMicClipping(
+            rawPeak: t.rawPeak, rawClipSampleCount: t.rawClipSamples))
+        XCTAssertFalse(SmartLevelController.isNearCeiling(t.trimmedPeak))
+        XCTAssertEqual(t.trimmedRMS, 0.43, accuracy: 1e-6)
+    }
+
     func testSmartLevelReducesInputVolumeAfterRepeatedHotWindows() {
         var ticks = 0
         for _ in 0..<SmartLevelController.hotTickThreshold {
@@ -65,6 +104,32 @@ final class SmartLevelControllerTests: XCTestCase {
         XCTAssertNil(next)
     }
 
+    func testSmartLevelCanReduceInputVolumeBelowThirtyFivePercent() {
+        var ticks = 0
+        for _ in 0..<SmartLevelController.hotTickThreshold { ticks += 1 }
+        let next = SmartLevelController.nextInputVolume(current: 0.35, hotTicks: ticks, enabled: true)
+        XCTAssertNotNil(next)
+        XCTAssertLessThan(next!, 0.35)
+        XCTAssertGreaterThanOrEqual(next!, SmartLevelController.minInputVolume)
+    }
+
+    func testSmartLevelStopsAtManualInputFloor() {
+        var ticks = 0
+        for _ in 0..<SmartLevelController.hotTickThreshold { ticks += 1 }
+        let next = SmartLevelController.nextInputVolume(
+            current: SmartLevelController.minInputVolume, hotTicks: ticks, enabled: true)
+        XCTAssertNil(next)
+    }
+
+    func testSmartLevelFromFortyThreePercentCanKeepReducing() {
+        var ticks = 0
+        for _ in 0..<SmartLevelController.hotTickThreshold { ticks += 1 }
+        let next = SmartLevelController.nextInputVolume(current: 0.43, hotTicks: ticks, enabled: true)
+        XCTAssertNotNil(next)
+        XCTAssertLessThan(next!, 0.43)
+        XCTAssertGreaterThanOrEqual(next!, SmartLevelController.minInputVolume)
+    }
+
     func testRuntimeScalarMirrorsInputVolumeValue() {
         let ui: Float = 0.73
         XCTAssertEqual(SmartLevelController.runtimeInputVolume(for: ui), 0.73, accuracy: 1e-6)
@@ -91,5 +156,44 @@ final class SmartLevelControllerTests: XCTestCase {
         let trimmedPeak: Float = 0.99
         XCTAssertTrue(SmartLevelController.isSourceMicClipping(rawPeak: rawPeak, rawClipSampleCount: 1))
         XCTAssertTrue(SmartLevelController.isNearCeiling(trimmedPeak))
+    }
+
+    func testInputGuardContractPublishesTrimmedInputLevelRawSourceWarningAndTrimmedHotTicks() {
+        var samples = [Float](repeating: 1.0, count: 64)
+        let telemetry = samples.withUnsafeMutableBufferPointer {
+            SmartLevelController.applyInputVolumeAndMeasure($0.baseAddress!, count: $0.count, volume: 0.43)
+        }
+
+        let decision = SmartLevelController.evaluateInputGuard(
+            telemetry: telemetry,
+            currentHotTicks: SmartLevelController.hotTickThreshold - 1,
+            currentInputVolume: 0.43,
+            smartLevelEnabled: true)
+
+        XCTAssertTrue(decision.isSourceMicClipping)
+        XCTAssertFalse(decision.isInputNearCeiling)
+        XCTAssertEqual(decision.inputLevel, 0.43, accuracy: 1e-6)
+        XCTAssertEqual(decision.consecutiveTrimmedHotTicks, 0)
+        XCTAssertNil(decision.suggestedInputVolume)
+    }
+
+    func testInputGuardSuggestsLowerVolumeWhenTrimmedInputIsStillHotAtFortyThreePercent() {
+        var samples = [Float](repeating: 2.4, count: 64)
+        let telemetry = samples.withUnsafeMutableBufferPointer {
+            SmartLevelController.applyInputVolumeAndMeasure($0.baseAddress!, count: $0.count, volume: 0.43)
+        }
+
+        let decision = SmartLevelController.evaluateInputGuard(
+            telemetry: telemetry,
+            currentHotTicks: SmartLevelController.hotTickThreshold - 1,
+            currentInputVolume: 0.43,
+            smartLevelEnabled: true)
+
+        XCTAssertTrue(decision.isSourceMicClipping)
+        XCTAssertTrue(decision.isInputNearCeiling)
+        XCTAssertEqual(decision.inputLevel, 1.032, accuracy: 1e-4)
+        XCTAssertEqual(decision.consecutiveTrimmedHotTicks, SmartLevelController.hotTickThreshold)
+        XCTAssertNotNil(decision.suggestedInputVolume)
+        XCTAssertLessThan(decision.suggestedInputVolume!, 0.43)
     }
 }
