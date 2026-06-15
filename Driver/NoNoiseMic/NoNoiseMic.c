@@ -289,7 +289,8 @@ static OSStatus NoNoiseMic_GetPropertyDataSize(AudioServerPlugInDriverRef inDriv
             case kAudioDevicePropertyAvailableNominalSampleRates:  *outDataSize = sizeof(AudioValueRange); return noErr;
             case kAudioDevicePropertyPreferredChannelsForStereo:   *outDataSize = 2 * sizeof(UInt32); return noErr;
             default:
-                if (sel == kSourceModeSelector) { *outDataSize = sizeof(UInt32); return noErr; }
+                // sourceMode is advertised by the visible mic only (see GetPropertyData).
+                if (sel == kSourceModeSelector && isMicDevice(inObjectID)) { *outDataSize = sizeof(UInt32); return noErr; }
                 return kAudioHardwareUnknownPropertyError;
         }
     }
@@ -322,6 +323,19 @@ static OSStatus NoNoiseMic_GetPropertyDataSize(AudioServerPlugInDriverRef inDriv
     UInt32 _avail = inDataSize / (UInt32)sizeof(elemType); \
     UInt32 _n = (_avail < (count)) ? _avail : (count);
 
+// Scalar/CFString writes MUST validate the caller's buffer first. coreaudiod normally sizes the
+// buffer from GetPropertyDataSize, but a short buffer would otherwise corrupt the daemon's heap —
+// Apple's NullAudio guards EVERY branch this way. CFString copies are +1 retained for the HAL.
+#define PUT_SCALAR(type, val) do { \
+        if (inDataSize < sizeof(type)) return kAudioHardwareBadPropertySizeError; \
+        *(type *)outData = (val); *outDataSize = (UInt32)sizeof(type); return noErr; \
+    } while (0)
+#define PUT_CFSTRING(cf) do { \
+        if (inDataSize < sizeof(CFStringRef)) return kAudioHardwareBadPropertySizeError; \
+        *(CFStringRef *)outData = CFStringCreateCopy(NULL, (cf)); \
+        *outDataSize = (UInt32)sizeof(CFStringRef); return noErr; \
+    } while (0)
+
 static OSStatus NoNoiseMic_GetPropertyData(AudioServerPlugInDriverRef inDriver, AudioObjectID inObjectID, pid_t inClientProcessID, const AudioObjectPropertyAddress *inAddress, UInt32 inQualifierDataSize, const void *inQualifierData, UInt32 inDataSize, UInt32 *outDataSize, void *outData) {
     (void)inDriver; (void)inClientProcessID;
     if (inAddress == NULL || outDataSize == NULL || outData == NULL) return kAudioHardwareIllegalOperationError;
@@ -331,11 +345,11 @@ static OSStatus NoNoiseMic_GetPropertyData(AudioServerPlugInDriverRef inDriver, 
 
     if (inObjectID == kObjectID_PlugIn) {
         switch (sel) {
-            case kAudioObjectPropertyBaseClass: *(AudioClassID *)outData = kAudioObjectClassID; *outDataSize = sizeof(AudioClassID); return noErr;
-            case kAudioObjectPropertyClass:     *(AudioClassID *)outData = kAudioPlugInClassID; *outDataSize = sizeof(AudioClassID); return noErr;
-            case kAudioObjectPropertyOwner:     *(AudioObjectID *)outData = kAudioObjectUnknown; *outDataSize = sizeof(AudioObjectID); return noErr;
-            case kAudioObjectPropertyManufacturer: *(CFStringRef *)outData = CFStringCreateCopy(NULL, kManufacturerName); *outDataSize = sizeof(CFStringRef); return noErr;
-            case kAudioPlugInPropertyResourceBundle: *(CFStringRef *)outData = CFStringCreateCopy(NULL, CFSTR("")); *outDataSize = sizeof(CFStringRef); return noErr;
+            case kAudioObjectPropertyBaseClass: PUT_SCALAR(AudioClassID, kAudioObjectClassID);
+            case kAudioObjectPropertyClass:     PUT_SCALAR(AudioClassID, kAudioPlugInClassID);
+            case kAudioObjectPropertyOwner:     PUT_SCALAR(AudioObjectID, kAudioObjectUnknown);
+            case kAudioObjectPropertyManufacturer:   PUT_CFSTRING(kManufacturerName);
+            case kAudioPlugInPropertyResourceBundle: PUT_CFSTRING(CFSTR(""));
             case kAudioObjectPropertyOwnedObjects:
             case kAudioPlugInPropertyDeviceList: {
                 AudioObjectID devs[2] = { kObjectID_Device_Mic, kObjectID_Device_Engine };
@@ -346,6 +360,7 @@ static OSStatus NoNoiseMic_GetPropertyData(AudioServerPlugInDriverRef inDriver, 
             }
             case kAudioPlugInPropertyTranslateUIDToDevice: {
                 if (inQualifierDataSize != sizeof(CFStringRef) || inQualifierData == NULL) return kAudioHardwareIllegalOperationError;
+                if (inDataSize < sizeof(AudioObjectID)) return kAudioHardwareBadPropertySizeError;
                 CFStringRef uid = *(const CFStringRef *)inQualifierData;
                 AudioObjectID match = kAudioObjectUnknown;
                 if (CFEqual(uid, kDeviceUID_Mic))         match = kObjectID_Device_Mic;
@@ -361,17 +376,18 @@ static OSStatus NoNoiseMic_GetPropertyData(AudioServerPlugInDriverRef inDriver, 
     if (isDevice(inObjectID)) {
         const bool mic = isMicDevice(inObjectID);
         switch (sel) {
-            case kAudioObjectPropertyBaseClass: *(AudioClassID *)outData = kAudioObjectClassID; *outDataSize = sizeof(AudioClassID); return noErr;
-            case kAudioObjectPropertyClass:     *(AudioClassID *)outData = kAudioDeviceClassID; *outDataSize = sizeof(AudioClassID); return noErr;
-            case kAudioObjectPropertyOwner:     *(AudioObjectID *)outData = kObjectID_PlugIn; *outDataSize = sizeof(AudioObjectID); return noErr;
-            case kAudioObjectPropertyName:      *(CFStringRef *)outData = CFStringCreateCopy(NULL, mic ? kDeviceName_Mic : kDeviceName_Engine); *outDataSize = sizeof(CFStringRef); return noErr;
-            case kAudioObjectPropertyManufacturer: *(CFStringRef *)outData = CFStringCreateCopy(NULL, kManufacturerName); *outDataSize = sizeof(CFStringRef); return noErr;
-            case kAudioDevicePropertyDeviceUID: *(CFStringRef *)outData = CFStringCreateCopy(NULL, mic ? kDeviceUID_Mic : kDeviceUID_Engine); *outDataSize = sizeof(CFStringRef); return noErr;
-            case kAudioDevicePropertyModelUID:  *(CFStringRef *)outData = CFStringCreateCopy(NULL, kModelUID); *outDataSize = sizeof(CFStringRef); return noErr;
-            case kAudioDevicePropertyTransportType: *(UInt32 *)outData = kAudioDeviceTransportTypeVirtual; *outDataSize = sizeof(UInt32); return noErr;
-            case kAudioDevicePropertyClockDomain: *(UInt32 *)outData = 0; *outDataSize = sizeof(UInt32); return noErr;
-            case kAudioDevicePropertyDeviceIsAlive: *(UInt32 *)outData = 1; *outDataSize = sizeof(UInt32); return noErr;
+            case kAudioObjectPropertyBaseClass: PUT_SCALAR(AudioClassID, kAudioObjectClassID);
+            case kAudioObjectPropertyClass:     PUT_SCALAR(AudioClassID, kAudioDeviceClassID);
+            case kAudioObjectPropertyOwner:     PUT_SCALAR(AudioObjectID, kObjectID_PlugIn);
+            case kAudioObjectPropertyName:      PUT_CFSTRING(mic ? kDeviceName_Mic : kDeviceName_Engine);
+            case kAudioObjectPropertyManufacturer: PUT_CFSTRING(kManufacturerName);
+            case kAudioDevicePropertyDeviceUID: PUT_CFSTRING(mic ? kDeviceUID_Mic : kDeviceUID_Engine);
+            case kAudioDevicePropertyModelUID:  PUT_CFSTRING(kModelUID);
+            case kAudioDevicePropertyTransportType: PUT_SCALAR(UInt32, kAudioDeviceTransportTypeVirtual);
+            case kAudioDevicePropertyClockDomain: PUT_SCALAR(UInt32, 0);
+            case kAudioDevicePropertyDeviceIsAlive: PUT_SCALAR(UInt32, 1);
             case kAudioDevicePropertyDeviceIsRunning: {
+                if (inDataSize < sizeof(UInt32)) return kAudioHardwareBadPropertySizeError;
                 pthread_mutex_lock(&gStateMutex);
                 UInt32 running = (mic ? gMicRunning : gEngineRunning) ? 1 : 0;
                 pthread_mutex_unlock(&gStateMutex);
@@ -379,13 +395,13 @@ static OSStatus NoNoiseMic_GetPropertyData(AudioServerPlugInDriverRef inDriver, 
             }
             // The hidden engine must NEVER be auto-selected as a default device — only the
             // visible mic is input-eligible. (output scope for the engine returns 0.)
-            case kAudioDevicePropertyDeviceCanBeDefaultDevice:       *(UInt32 *)outData = mic ? 1 : 0; *outDataSize = sizeof(UInt32); return noErr;
-            case kAudioDevicePropertyDeviceCanBeDefaultSystemDevice: *(UInt32 *)outData = mic ? 1 : 0; *outDataSize = sizeof(UInt32); return noErr;
-            case kAudioDevicePropertyLatency:       *(UInt32 *)outData = 0; *outDataSize = sizeof(UInt32); return noErr;
-            case kAudioDevicePropertySafetyOffset:  *(UInt32 *)outData = 0; *outDataSize = sizeof(UInt32); return noErr;
-            case kAudioDevicePropertyIsHidden:      *(UInt32 *)outData = mic ? 0 : 1; *outDataSize = sizeof(UInt32); return noErr;
-            case kAudioDevicePropertyZeroTimeStampPeriod: *(UInt32 *)outData = kZeroTimeStampPeriod; *outDataSize = sizeof(UInt32); return noErr;
-            case kAudioDevicePropertyNominalSampleRate: *(Float64 *)outData = kSampleRate; *outDataSize = sizeof(Float64); return noErr;
+            case kAudioDevicePropertyDeviceCanBeDefaultDevice:       PUT_SCALAR(UInt32, (UInt32)(mic ? 1 : 0));
+            case kAudioDevicePropertyDeviceCanBeDefaultSystemDevice: PUT_SCALAR(UInt32, (UInt32)(mic ? 1 : 0));
+            case kAudioDevicePropertyLatency:       PUT_SCALAR(UInt32, 0);
+            case kAudioDevicePropertySafetyOffset:  PUT_SCALAR(UInt32, 0);
+            case kAudioDevicePropertyIsHidden:      PUT_SCALAR(UInt32, (UInt32)(mic ? 0 : 1));
+            case kAudioDevicePropertyZeroTimeStampPeriod: PUT_SCALAR(UInt32, kZeroTimeStampPeriod);
+            case kAudioDevicePropertyNominalSampleRate: PUT_SCALAR(Float64, kSampleRate);
             case kAudioDevicePropertyRelatedDevices: {
                 CLAMP_ARRAY(AudioObjectID, 1);
                 if (_n >= 1) ((AudioObjectID *)outData)[0] = inObjectID;
@@ -416,8 +432,10 @@ static OSStatus NoNoiseMic_GetPropertyData(AudioServerPlugInDriverRef inDriver, 
                 return noErr;
             }
             default:
-                if (sel == kSourceModeSelector) {
-                    *(UInt32 *)outData = atomic_load(&gSourceMode); *outDataSize = sizeof(UInt32); return noErr;
+                // sourceMode lives on the VISIBLE mic only (it owns the loopback-vs-xpc switch);
+                // the hidden engine does not advertise it.
+                if (sel == kSourceModeSelector && mic) {
+                    PUT_SCALAR(UInt32, atomic_load(&gSourceMode));
                 }
                 return kAudioHardwareUnknownPropertyError;
         }
@@ -426,14 +444,14 @@ static OSStatus NoNoiseMic_GetPropertyData(AudioServerPlugInDriverRef inDriver, 
     if (isStream(inObjectID)) {
         const bool input = (inObjectID == kObjectID_Stream_Mic_Input);
         switch (sel) {
-            case kAudioObjectPropertyBaseClass: *(AudioClassID *)outData = kAudioObjectClassID; *outDataSize = sizeof(AudioClassID); return noErr;
-            case kAudioObjectPropertyClass:     *(AudioClassID *)outData = kAudioStreamClassID; *outDataSize = sizeof(AudioClassID); return noErr;
-            case kAudioObjectPropertyOwner:     *(AudioObjectID *)outData = input ? kObjectID_Device_Mic : kObjectID_Device_Engine; *outDataSize = sizeof(AudioObjectID); return noErr;
-            case kAudioStreamPropertyIsActive:  *(UInt32 *)outData = 1; *outDataSize = sizeof(UInt32); return noErr;
-            case kAudioStreamPropertyDirection: *(UInt32 *)outData = input ? 1 : 0; *outDataSize = sizeof(UInt32); return noErr; // 1=input, 0=output
-            case kAudioStreamPropertyTerminalType: *(UInt32 *)outData = input ? kAudioStreamTerminalTypeMicrophone : kAudioStreamTerminalTypeSpeaker; *outDataSize = sizeof(UInt32); return noErr;
-            case kAudioStreamPropertyStartingChannel: *(UInt32 *)outData = 1; *outDataSize = sizeof(UInt32); return noErr;
-            case kAudioStreamPropertyLatency:   *(UInt32 *)outData = 0; *outDataSize = sizeof(UInt32); return noErr;
+            case kAudioObjectPropertyBaseClass: PUT_SCALAR(AudioClassID, kAudioObjectClassID);
+            case kAudioObjectPropertyClass:     PUT_SCALAR(AudioClassID, kAudioStreamClassID);
+            case kAudioObjectPropertyOwner:     PUT_SCALAR(AudioObjectID, input ? kObjectID_Device_Mic : kObjectID_Device_Engine);
+            case kAudioStreamPropertyIsActive:  PUT_SCALAR(UInt32, 1);
+            case kAudioStreamPropertyDirection: PUT_SCALAR(UInt32, (UInt32)(input ? 1 : 0)); // 1=input, 0=output
+            case kAudioStreamPropertyTerminalType: PUT_SCALAR(UInt32, (UInt32)(input ? kAudioStreamTerminalTypeMicrophone : kAudioStreamTerminalTypeSpeaker));
+            case kAudioStreamPropertyStartingChannel: PUT_SCALAR(UInt32, 1);
+            case kAudioStreamPropertyLatency:   PUT_SCALAR(UInt32, 0);
             case kAudioObjectPropertyOwnedObjects: *outDataSize = 0; return noErr;
             case kAudioStreamPropertyVirtualFormat:
             case kAudioStreamPropertyPhysicalFormat: {
@@ -493,10 +511,12 @@ static OSStatus NoNoiseMic_SetPropertyData(AudioServerPlugInDriverRef inDriver, 
     (void)inDriver; (void)inClientProcessID; (void)inQualifierDataSize; (void)inQualifierData;
     if (inAddress == NULL || inData == NULL) return kAudioHardwareIllegalOperationError;
 
-    // sourceMode toggle (A2 sets this from the app; A1 leaves it at 0).
-    if (isDevice(inObjectID) && inAddress->mSelector == kSourceModeSelector) {
+    // sourceMode toggle — visible mic only (A2 sets this from the app; A1 leaves it at 0).
+    if (isMicDevice(inObjectID) && inAddress->mSelector == kSourceModeSelector) {
         if (inDataSize < sizeof(UInt32)) return kAudioHardwareBadPropertySizeError;
-        atomic_store(&gSourceMode, *(const UInt32 *)inData);
+        UInt32 mode = *(const UInt32 *)inData;
+        if (mode > 1) return kAudioHardwareIllegalOperationError; // only 0=loopback, 1=xpc are defined
+        atomic_store(&gSourceMode, mode);
         AudioObjectPropertyAddress a = { kSourceModeSelector, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyElementMain };
         NotifyChanged(inObjectID, &a);
         return noErr;
@@ -512,8 +532,17 @@ static OSStatus NoNoiseMic_SetPropertyData(AudioServerPlugInDriverRef inDriver, 
         if (inDataSize < sizeof(AudioStreamBasicDescription)) return kAudioHardwareBadPropertySizeError;
         const AudioStreamBasicDescription *f = (const AudioStreamBasicDescription *)inData;
         AudioStreamBasicDescription want = MakeASBD();
-        bool ok = (f->mSampleRate == want.mSampleRate) && (f->mFormatID == want.mFormatID) &&
-                  (f->mChannelsPerFrame == want.mChannelsPerFrame) && (f->mBitsPerChannel == want.mBitsPerChannel);
+        // Validate the FULL canonical ASBD. Checking only rate/id/channels/bits would let a client
+        // negotiate a NON-interleaved or differently-packed layout that DoIOOperation (which treats
+        // ioMainBuffer as packed interleaved Float32) would then silently corrupt / channel-swap.
+        bool ok = (f->mSampleRate       == want.mSampleRate) &&
+                  (f->mFormatID         == want.mFormatID) &&
+                  (f->mFormatFlags      == want.mFormatFlags) &&   // interleaved + float + packed
+                  (f->mBitsPerChannel   == want.mBitsPerChannel) &&
+                  (f->mChannelsPerFrame == want.mChannelsPerFrame) &&
+                  (f->mFramesPerPacket  == want.mFramesPerPacket) &&
+                  (f->mBytesPerFrame    == want.mBytesPerFrame) &&
+                  (f->mBytesPerPacket   == want.mBytesPerPacket);
         return ok ? noErr : kAudioHardwareIllegalOperationError;
     }
     if (isStream(inObjectID) && inAddress->mSelector == kAudioStreamPropertyIsActive) {
@@ -573,8 +602,11 @@ static OSStatus NoNoiseMic_GetZeroTimeStamp(AudioServerPlugInDriverRef inDriver,
 }
 
 static OSStatus NoNoiseMic_WillDoIOOperation(AudioServerPlugInDriverRef inDriver, AudioObjectID inDeviceObjectID, UInt32 inClientID, UInt32 inOperationID, Boolean *outWillDo, Boolean *outWillDoInPlace) {
-    (void)inDriver; (void)inDeviceObjectID; (void)inClientID;
-    bool will = (inOperationID == kAudioServerPlugInIOOperationReadInput) || (inOperationID == kAudioServerPlugInIOOperationWriteMix);
+    (void)inDriver; (void)inClientID;
+    // Direction-specific, mirroring DoIOOperation: the mic only reads input, the engine only
+    // writes its mix. (Claiming both on both devices is harmless but misrepresents the topology.)
+    bool will = (isMicDevice(inDeviceObjectID)    && inOperationID == kAudioServerPlugInIOOperationReadInput) ||
+                (isEngineDevice(inDeviceObjectID) && inOperationID == kAudioServerPlugInIOOperationWriteMix);
     if (outWillDo)        *outWillDo = will;
     if (outWillDoInPlace) *outWillDoInPlace = true;
     return noErr;

@@ -19,9 +19,15 @@ Both devices share ONE loopback ring (`nn_ring`) plus a per-device zero-timestam
 The visible device's `sourceMode` (`'srcm'`) property selects loopback (`0`, default) vs the
 A2 shared-memory/XPC path (`1`).
 
+The ring serves **silence, never stale speech**: it tracks a `writeEnd` watermark and zeroes any
+frame the engine hasn't produced (or that has been overwritten by a wrap). So if the app stops
+rendering while an app is still capturing "NoNoise Mic", the call hears silence — not a loop of
+your last sentence.
+
 ## Pure, host-tested math
 The risky index math lives in CoreAudio-free C and is unit-tested without a device:
-`Driver/NoNoiseMic/nn_ring.{c,h}`, `nn_clock.{c,h}` → `Driver/tests/run-tests.sh`.
+`Driver/NoNoiseMic/nn_ring.{c,h}`, `nn_clock.{c,h}` → `Driver/tests/run-tests.sh` (covers
+wraparound, zero-timestamp jumps, and the read-before-write / writer-stopped silence guarantees).
 
 ## Build / install / uninstall
 ```bash

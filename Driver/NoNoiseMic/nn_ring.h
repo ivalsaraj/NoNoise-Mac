@@ -9,11 +9,17 @@
 #define NN_RING_H
 #include <stdint.h>
 #include <stddef.h>
+#include <stdatomic.h>
 
 typedef struct {
     float   *storage;        // caller-owned: capacityFrames * channels floats
     uint32_t capacityFrames; // MUST be a power of two
     uint32_t channels;
+    // Highest absolute (sampleTime + frames) ever written. The reader serves SILENCE for any
+    // frame at/after this watermark (writer hasn't produced it) or older than one full capacity
+    // (the slot was overwritten / wrapped). Published with release / consumed with acquire so a
+    // stopped writer can never leak stale cleaned speech back through the modulo index.
+    _Atomic uint64_t writeEnd;
 } nn_ring;
 
 // Initialize. capacityFrames MUST be a power of two. Returns 0 on success, -1 on bad args.
@@ -27,7 +33,8 @@ void nn_ring_clear(nn_ring *r);
 void nn_ring_write_at(nn_ring *r, uint64_t sampleTime, const float *src, uint32_t frames);
 
 // Read `frames` interleaved frames starting at absolute sample time `sampleTime`,
-// wrapping modulo capacity, into `dst` (length = frames * channels).
+// wrapping modulo capacity, into `dst` (length = frames * channels). Frames outside the valid
+// window [writeEnd - capacity, writeEnd) are written as SILENCE rather than stale slot contents.
 void nn_ring_read_at(nn_ring *r, uint64_t sampleTime, float *dst, uint32_t frames);
 
 #endif

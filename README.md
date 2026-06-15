@@ -101,8 +101,9 @@ Installing restarts `coreaudiod`, so **all** audio drops for ~3 s. Then:
 
 1. **Launch** NoNoise Mac — the **waveform icon** appears in your menu bar.
 2. **Input** — set **Input Device** to your real microphone (Built-in, USB, etc.). Output is
-   **automatic**: the app routes cleaned audio to the hidden "NoNoise Mic Engine" — there is no
-   output device to choose.
+   **automatic**: the app routes cleaned audio to the hidden "NoNoise Mic Engine" and the popover
+   shows **Output: Automatic → NoNoise Mic** (the Output **picker** only appears for the BlackHole
+   fallback below).
 3. **Point your apps at the mic** — in Slack / Zoom / Meet / Discord / OBS, set the
    **Microphone** to **NoNoise Mic**.
 4. **Pick a mode** — Meeting / Podcast / Tutorial, or fine-tune **Suppression Strength** and

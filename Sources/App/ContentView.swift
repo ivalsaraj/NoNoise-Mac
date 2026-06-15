@@ -131,12 +131,22 @@ struct ContentView: View {
             }
             VStack(alignment: .leading, spacing: 6) {
                 cardLabel("Output", systemImage: "speaker.wave.2.fill")
-                Picker("", selection: $audioModel.selectedOutputDeviceID) {
-                    ForEach(audioModel.outputDevices) { device in
-                        Text(device.name).tag(device.id)
+                if audioModel.driverInstalled {
+                    // Output is auto-routed to the hidden "NoNoise Mic Engine", which is intentionally
+                    // absent from outputDevices — so a picker here would render empty. Show the routing
+                    // instead. The picker remains for the BlackHole fallback (driver not installed).
+                    HStack(spacing: 6) {
+                        Image(systemName: "wand.and.stars").font(.caption2).foregroundColor(.secondary)
+                        Text("Automatic → NoNoise Mic").font(.caption).foregroundColor(.secondary)
                     }
+                } else {
+                    Picker("", selection: $audioModel.selectedOutputDeviceID) {
+                        ForEach(audioModel.outputDevices) { device in
+                            Text(device.name).tag(device.id)
+                        }
+                    }
+                    .labelsHidden()
                 }
-                .labelsHidden()
             }
         }
         .nnCard()

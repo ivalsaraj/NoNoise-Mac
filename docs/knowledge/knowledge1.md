@@ -5,6 +5,32 @@ for the must-read failure modes.
 
 ---
 
+### [GOTCHA] 2026-06-15 — Loopback ring replays stale speech unless reads are window-guarded (privacy)
+- **Symptom (caught in Codex code review):** a modulo ring (`nn_ring_read_at` reading `storage[pos & mask]`)
+  keeps returning the LAST ~1.3 s of cleaned audio after the writer stops — because the mic-read device
+  and the engine-write device are SEPARATE objects with separate `StartIO`/`StopIO`. App quits / toggles
+  off → engine stops writing, but Slack still captures "NoNoise Mic" → it hears a loop of your last words.
+- **Root cause:** modulo indexing has no notion of "this frame was never written" — old slot contents alias
+  back. Two-device topology makes the writer-stops-while-reader-runs case routine, not exotic.
+- **Fix/Rule:** the ring tracks a `writeEnd` watermark (publish release after the slot writes, read acquire
+  before). `nn_ring_read_at` zeroes any frame `>= writeEnd` (unwritten) or `< writeEnd - capacity`
+  (overwritten). Reads outside the valid window are SILENCE. Host tests assert read-before-write,
+  writer-stopped, and partial-straddle silence. Same rule for the `sourceMode==1` mic branch (A2 stub):
+  `memset` silence, never serve whatever's lying around.
+- **Files:** `Driver/NoNoiseMic/nn_ring.{c,h}`, `Driver/tests/test_nn_ring.c`, `Driver/NoNoiseMic/NoNoiseMic.c`.
+
+### [GOTCHA] 2026-06-15 — HAL driver must size-check every `GetPropertyData` write & validate the FULL ASBD
+- **Symptom (Codex review):** scalar/CFString property branches wrote `*(UInt32*)outData = …` /
+  `*(CFStringRef*)outData = …` with no `inDataSize` check, and the stream format setter accepted a format
+  on rate/id/channels/bits alone — ignoring `mFormatFlags`/`mBytesPerFrame`.
+- **Root cause:** a short caller buffer corrupts `coreaudiod`'s heap; a partial ASBD check lets a client
+  negotiate a NON-interleaved/repacked layout that `DoIOOperation` (packed-interleaved-only) then
+  silently corrupts or channel-swaps. Apple's NullAudio guards every branch for exactly this reason.
+- **Fix/Rule:** `PUT_SCALAR`/`PUT_CFSTRING` macros return `kAudioHardwareBadPropertySizeError` before any
+  write; the format setter compares the FULL canonical `MakeASBD()` (flags + bytes/frame + bytes/packet +
+  frames/packet too) and rejects anything else with `kAudioHardwareIllegalOperationError`.
+- **Files:** `Driver/NoNoiseMic/NoNoiseMic.c` (`NoNoiseMic_GetPropertyData`, `NoNoiseMic_SetPropertyData`).
+
 ### [DECISION] 2026-06-15 — NoNoise Mic driver: two-device loopback topology, one canonical layout
 - **Topology:** a VISIBLE input-only device + a HIDDEN output-only "engine" device (NOT one duplex
   device). The app renders cleaned audio to the engine; consumer apps pick the visible mic. Both
