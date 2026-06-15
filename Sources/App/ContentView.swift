@@ -13,7 +13,7 @@ struct ContentView: View {
             statusCard
             bypassBanner
             modeCard
-            hudCard
+            LiveHUDCard(meter: audioModel.meterModel, addedLatencyMs: audioModel.addedLatencyMs)
             clarityCard
             incomingCard
             mouthNoiseCard
@@ -24,6 +24,10 @@ struct ContentView: View {
         .animation(.easeInOut(duration: 0.18), value: dispatcher.isBypassed)
         .padding(16)
         .frame(width: 320)
+        // Drive the gated UI-meter publish loop only while the popover is on screen. The control
+        // pump (Smart Level + loudness) keeps running always — see AudioModel.beginMeterObservation.
+        .onAppear { audioModel.beginMeterObservation(.popover) }
+        .onDisappear { audioModel.endMeterObservation(.popover) }
     }
 
     // MARK: - Header
@@ -94,48 +98,9 @@ struct ContentView: View {
                           : "Toggle Noise Cancellation")
             }
 
-            HStack(spacing: 8) {
-                Image(systemName: "mic.fill")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                MeterView(level: audioModel.inputLevel)
-                    .frame(height: 6)
-            }
-
-            HStack(spacing: 8) {
-                Image(systemName: "speaker.wave.2.fill")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                MeterView(level: audioModel.outputLevel)
-                    .frame(height: 6)
-                if audioModel.isOutputClipping {
-                    Text("CLIP").font(.caption2).fontWeight(.bold).foregroundColor(.red)
-                }
-            }
-
-            if audioModel.isInputNearCeiling || audioModel.isSourceMicClipping || audioModel.isOutputClipping {
-                VStack(alignment: .leading, spacing: 4) {
-                    if audioModel.isSourceMicClipping {
-                        Label("Source mic clipping — lower device input volume if available.",
-                              systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption2)
-                            .foregroundColor(.orange)
-                    }
-                    if audioModel.isInputNearCeiling {
-                        Label("Input too loud", systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption2)
-                            .foregroundColor(.orange)
-                    }
-                    if audioModel.isOutputClipping {
-                        Label("Output clipping", systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption2)
-                            .foregroundColor(.orange)
-                    }
-                    if let msg = audioModel.smartLevelMessage {
-                        Text(msg).font(.caption2).foregroundColor(.secondary)
-                    }
-                }
-            }
+            // Live meters + warnings observe `meterModel` (NOT audioModel), so their 25 Hz
+            // refresh re-renders only this subview — the master toggle / title above stay snappy.
+            StatusMeters(meter: audioModel.meterModel)
         }
         .nnCard(highlighted: on)
     }
@@ -172,29 +137,6 @@ struct ContentView: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-        }
-        .nnCard()
-    }
-
-    // MARK: - Live HUD (AI activity + loudness + latency)
-
-    private var hudCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            cardLabel("Live", systemImage: "waveform.path.ecg")
-            HStack(spacing: 8) {
-                Text("AI").font(.caption2).foregroundColor(.secondary)
-                // MeterView scales level ×5 internally; aiActivity is already 0…1, so
-                // divide by 5 to use the full bar without a 5× over-scale.
-                MeterView(level: audioModel.aiActivity / 5).frame(height: 6)
-            }
-            HStack {
-                Text(audioModel.momentaryLUFS <= LoudnessMeter.silenceLUFS + 1
-                     ? "— LUFS" : String(format: "%.1f LUFS", audioModel.momentaryLUFS))
-                    .font(.caption).monospacedDigit().foregroundColor(.secondary)
-                Spacer()
-                Text(String(format: "%.0f ms latency", audioModel.addedLatencyMs))
-                    .font(.caption).monospacedDigit().foregroundColor(.secondary)
-            }
         }
         .nnCard()
     }
@@ -360,6 +302,91 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Live meter subviews (observe MeterModel, not AudioModel)
+// These are the ONLY views that subscribe to the ~25 Hz meter stream. Isolating them here keeps
+// the high-frequency invalidation off ContentView's body, so the master toggle, pickers, and
+// cards do not rebuild on every meter tick (menu-bar perf fix).
+
+private struct StatusMeters: View {
+    @ObservedObject var meter: MeterModel
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "mic.fill")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                MeterView(level: meter.inputLevel)
+                    .frame(height: 6)
+            }
+
+            HStack(spacing: 8) {
+                Image(systemName: "speaker.wave.2.fill")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                MeterView(level: meter.outputLevel)
+                    .frame(height: 6)
+                if meter.isOutputClipping {
+                    Text("CLIP").font(.caption2).fontWeight(.bold).foregroundColor(.red)
+                }
+            }
+
+            if meter.isInputNearCeiling || meter.isSourceMicClipping || meter.isOutputClipping {
+                VStack(alignment: .leading, spacing: 4) {
+                    if meter.isSourceMicClipping {
+                        Label("Source mic clipping — lower device input volume if available.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
+                    if meter.isInputNearCeiling {
+                        Label("Input too loud", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
+                    if meter.isOutputClipping {
+                        Label("Output clipping", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
+                    if let msg = meter.smartLevelMessage {
+                        Text(msg).font(.caption2).foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct LiveHUDCard: View {
+    @ObservedObject var meter: MeterModel
+    let addedLatencyMs: Float
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Live", systemImage: "waveform.path.ecg")
+                .font(.caption)
+                .fontWeight(.medium)
+                .foregroundColor(.secondary)
+            HStack(spacing: 8) {
+                Text("AI").font(.caption2).foregroundColor(.secondary)
+                // MeterView scales level ×5 internally; aiActivity is already 0…1, so
+                // divide by 5 to use the full bar without a 5× over-scale.
+                MeterView(level: meter.aiActivity / 5).frame(height: 6)
+            }
+            HStack {
+                Text(meter.momentaryLUFS <= LoudnessMeter.silenceLUFS + 1
+                     ? "— LUFS" : String(format: "%.1f LUFS", meter.momentaryLUFS))
+                    .font(.caption).monospacedDigit().foregroundColor(.secondary)
+                Spacer()
+                Text(String(format: "%.0f ms latency", addedLatencyMs))
+                    .font(.caption).monospacedDigit().foregroundColor(.secondary)
+            }
+        }
+        .nnCard()
+    }
+}
+
 // MARK: - Live input meter
 
 struct MeterView: View {
@@ -423,8 +450,16 @@ class WindowManager {
 
             settingsWindow = panel
 
-            NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: panel, queue: nil) { _ in
+            // Drive the gated UI-meter publish loop while the Settings window is open so its live
+            // diagnostics (clip warnings, Smart Level message, integrated LUFS) stay current even
+            // when the popover is closed. Reference-counted in AudioModel, so this composes with
+            // the popover's own begin/end. Tied to the window lifecycle (begin on create, end on
+            // willClose) rather than SwiftUI onDisappear, which is unreliable for a reused NSPanel.
+            model.beginMeterObservation(.settings)
+
+            NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: panel, queue: nil) { [weak model] _ in
                 settingsWindow = nil
+                model?.endMeterObservation(.settings)
             }
         }
         settingsWindow?.makeKeyAndOrderFront(nil)

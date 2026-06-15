@@ -2,7 +2,17 @@ import SwiftUI
 import AppKit
 
 enum NoNoiseLogoImage {
-    static func menuBar(isActive: Bool) -> NSImage {
+    // The status icon is byte-identical regardless of AI state — the drawing fills with
+    // `NSColor.labelColor` unconditionally and never branches on `isActive`. So the offscreen
+    // `lockFocus` render is run exactly once and cached; re-rendering it on every MenuBarExtra
+    // Scene re-evaluation (25×/sec while telemetry stormed) was pure main-thread waste that
+    // slowed popover presentation. If the icon is ever made to reflect AI on/off, swap this for
+    // two cached variants keyed on `isActive`.
+    private static let cachedBar: NSImage = renderBar()
+
+    static func menuBar(isActive: Bool) -> NSImage { cachedBar }
+
+    private static func renderBar() -> NSImage {
         let size = NSSize(width: 18, height: 18)
         let image = NSImage(size: size)
 
@@ -84,10 +94,18 @@ struct NoNoiseLogoMark: View {
 }
 
 struct NoNoiseLogoAsset: View {
+    // Load + decode the header PNG from the bundle exactly once. Reading the file inside `body`
+    // re-decoded it on every ContentView recompute (25×/sec while the popover was open, driven by
+    // the telemetry storm) — see the menu-bar perf plan. `nil` when the resource is missing, which
+    // falls back to the vector mark below.
+    private static let cachedLogo: NSImage? = {
+        guard let path = Bundle.main.path(forResource: "NoNoiseMacLogo", ofType: "png") else { return nil }
+        return NSImage(contentsOfFile: path)
+    }()
+
     var body: some View {
         Group {
-            if let path = Bundle.main.path(forResource: "NoNoiseMacLogo", ofType: "png"),
-               let nsImage = NSImage(contentsOfFile: path) {
+            if let nsImage = Self.cachedLogo {
                 Image(nsImage: nsImage)
                     .resizable()
             } else {

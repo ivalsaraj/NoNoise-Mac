@@ -70,11 +70,14 @@ docs, and reviews.
 - **Limiter** — fast peak limiter + hard clamp; the final overflow guard (ceiling dB).
 
 ## Metering & loudness (Tier 2)
-- **Telemetry** — lock-free scalars written on the render/DSP threads and read by the
-  shared ~25 Hz UI timer (`AudioModel.publishMeterTelemetry`, the same timer Smart Level
-  uses) — the suppression-knob atomic-scalar pattern, reversed; no locks. The
-  `LoudnessMeter` struct is mutated only on the render thread and snapshotted into
-  scalars (`tMomentaryLUFS` / `tIntegratedLUFS`) — it is never read cross-thread.
+- **Telemetry** — lock-free scalars written on the render/DSP threads and consumed by the
+  always-on ~25 Hz **control pump** (`AudioModel.runControlPump`, which also runs Smart Level
+  + loudness normalization) — the suppression-knob atomic-scalar pattern, reversed; no locks.
+  The pump writes a plain `MeterSnapshot`; a **separate, popover-gated** UI timer copies that
+  snapshot into the `@Published` fields on `MeterModel` only while a meter view is on screen,
+  so `AudioModel` no longer republishes at 25 Hz. The `LoudnessMeter` struct is mutated only on
+  the render thread and snapshotted into scalars (`tMomentaryLUFS` / `tIntegratedLUFS`) — it is
+  never read cross-thread.
 - **AI activity** — a smoothed 0…1 "AI working hard" signal = energy-weighted average
   per-bin suppression (`1 − wetMag/dryMag`) from the DSP blend. A UX hint, not a model
   quality metric; reads 0 when noise cancellation is off.

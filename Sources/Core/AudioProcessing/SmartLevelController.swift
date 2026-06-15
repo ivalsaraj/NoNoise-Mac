@@ -45,7 +45,7 @@ public enum SmartLevelController {
         public let trimmedHotSamples: Int
     }
 
-    /// Input-side guard contract published by `AudioModel.publishMeterTelemetry()`.
+    /// Input-side guard contract consumed by `AudioModel.runControlPump()`.
     /// `inputLevel` is the trimmed meter value; the source warning and the trimmed
     /// near-ceiling decision are kept separate so raw source clipping alone never
     /// forces Smart Level to lower a trimmed signal that is already safe.

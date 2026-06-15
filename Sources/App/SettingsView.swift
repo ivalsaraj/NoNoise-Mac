@@ -8,7 +8,7 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
-            GeneralSettingsView(audioModel: audioModel)
+            GeneralSettingsView(audioModel: audioModel, meterModel: audioModel.meterModel)
                 .tabItem {
                     Label("General", systemImage: "slider.horizontal.3")
                 }
@@ -32,6 +32,9 @@ struct SettingsView: View {
 
 struct GeneralSettingsView: View {
     @ObservedObject var audioModel: AudioModel
+    // Live diagnostics (clip/ceiling warnings, Smart Level message, integrated LUFS) now live on
+    // MeterModel — observe it so the Settings readouts stay live while the popover is closed.
+    @ObservedObject var meterModel: MeterModel
 
     @State private var isShowingSaveSheet = false
     @State private var newProfileName: String = ""
@@ -195,13 +198,13 @@ struct GeneralSettingsView: View {
                 .controlSize(.small)
             }
 
-            if audioModel.isSourceMicClipping {
+            if meterModel.isSourceMicClipping {
                 Label("Source mic is clipping before NoNoise. Lower macOS/device input volume if available.",
                       systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundColor(.orange)
             }
-            if audioModel.isInputNearCeiling {
+            if meterModel.isInputNearCeiling {
                 Label("Input too loud", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundColor(.orange)
@@ -219,7 +222,7 @@ struct GeneralSettingsView: View {
             }
             .toggleStyle(.switch)
 
-            if let msg = audioModel.smartLevelMessage {
+            if let msg = meterModel.smartLevelMessage {
                 Text(msg).font(.caption).foregroundColor(.secondary)
             }
         }
@@ -380,7 +383,7 @@ struct GeneralSettingsView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
 
-            if audioModel.isOutputClipping {
+            if meterModel.isOutputClipping {
                 Label("Output clipping", systemImage: "exclamationmark.triangle.fill")
                     .font(.caption)
                     .foregroundColor(.orange)
@@ -450,8 +453,8 @@ struct GeneralSettingsView: View {
             HStack {
                 sectionHeader("Loudness", systemImage: "speaker.wave.2.circle.fill")
                 Spacer()
-                Text(audioModel.integratedLUFS <= LoudnessMeter.silenceLUFS + 1
-                     ? "— LUFS" : String(format: "%.1f LUFS", audioModel.integratedLUFS))
+                Text(meterModel.integratedLUFS <= LoudnessMeter.silenceLUFS + 1
+                     ? "— LUFS" : String(format: "%.1f LUFS", meterModel.integratedLUFS))
                     .font(.callout).monospacedDigit().foregroundColor(.secondary)
             }
             Toggle(isOn: $audioModel.loudnessNormEnabled) {

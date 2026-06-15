@@ -21,7 +21,6 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         }
     }
     @Published public var errorMessage: String?
-    @Published public var inputLevel: Float = 0.0
     @Published public var activeOutputDeviceName: String = "Unknown"
     @Published public var permissionStatus: String = "Unknown"
     
@@ -175,7 +174,9 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     @Published public var smartLevelEnabled: Bool = false {
         didSet {
             guard !isApplyingPreset else { return }
-            if !smartLevelEnabled { smartLevelMessage = nil }
+            // Clear the Smart Level message via the snapshot (the gated UI loop reflects it on the
+            // next publish / on reopen). The control pump is the single owner of this field.
+            if !smartLevelEnabled { meterSnapshot.smartLevelMessage = nil }
             persistSettings()
         }
     }
@@ -198,31 +199,24 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         didSet { guard !isApplyingPreset else { return }; persistSettings() }
     }
 
-    @Published public var rawInputPeak: Float = 0.0
-    @Published public var trimmedInputPeak: Float = 0.0
-    @Published public var outputPeak: Float = 0.0
-    @Published public var isInputNearCeiling: Bool = false
-    @Published public var isOutputClipping: Bool = false
-    @Published public var isSourceMicClipping: Bool = false
-    @Published public var smartLevelMessage: String?
-
     /// The user's saved Voice Profiles. Persisted as a JSON array under `mv.profiles`.
     /// Mutations go through `saveCurrentAsProfile`, `deleteProfile`, and `renameProfile`
     /// (not direct array mutation) to keep persistence consistent.
     @Published public var profiles: [VoiceProfile] = []
 
-    // MARK: Live HUD telemetry (refreshed ~25 Hz by the existing meter timer).
-    // Output peak + clip reuse the Smart Level `outputPeak` / `isOutputClipping` above.
-    /// Post-processing output RMS level (0…~1) — the HUD output needle.
-    @Published public var outputLevel: Float = 0.0
-    /// Smoothed "AI working hard" signal 0…1 (energy-weighted per-bin suppression). UX hint.
-    @Published public var aiActivity: Float = 0.0
-    /// Momentary (400 ms) loudness in LUFS — the live needle.
-    @Published public var momentaryLUFS: Float = LoudnessMeter.silenceLUFS
-    /// Integrated (gated) loudness in LUFS since the meter last reset — the headline number.
-    @Published public var integratedLUFS: Float = LoudnessMeter.silenceLUFS
     /// Fixed added latency in ms (ring-buffer target + one STFT frame), computed once.
+    /// Low-frequency state — stays on AudioModel (NOT part of the 25 Hz meter stream).
     @Published public var addedLatencyMs: Float = 0.0
+
+    // MARK: Live meter / HUD telemetry — ISOLATED off AudioModel (menu-bar perf fix).
+    // The high-frequency (~25 Hz) live-meter fields (input/output level + peaks, AI activity,
+    // LUFS, clip/ceiling warnings, Smart Level message) live on `meterModel`, NOT here, so
+    // `AudioModel.objectWillChange` no longer fires on every telemetry tick — which decouples the
+    // MenuBarExtra Scene/label (it observes AudioModel) from the meter storm. The always-on
+    // control pump writes plain `meterSnapshot` fields; the gated UI-publish loop copies them
+    // into `meterModel` ONLY while a meter view is on screen (popover or Settings).
+    public let meterModel = MeterModel()
+    private var meterSnapshot = MeterSnapshot()
 
     private var isApplyingPreset = false
 
@@ -234,7 +228,22 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     private var tOutputClipCount: Int32 = 0
     private var tRawInputClipCount: Int32 = 0
     private var tTrimmedInputHotCount: Int32 = 0
-    private var meterTimer: Timer?
+    // Two timers replace the single legacy meter timer (menu-bar perf fix):
+    //  • controlPumpTimer — ALWAYS-ON ~25 Hz; owns the t* read-and-reset and runs BOTH audio
+    //    control loops (Smart Level + loudness normalization). Non-publishing → zero SwiftUI churn.
+    //  • uiPublishTimer — ~25 Hz but GATED to meter-view visibility; copies the snapshot into
+    //    `meterModel`. Driven by an active-source set so it never double-starts or leaks.
+    private var controlPumpTimer: Timer?
+    private var uiPublishTimer: Timer?
+    /// A live-meter surface that wants the gated UI-publish loop running. One case per surface so
+    /// observation is tracked per-source (idempotent) rather than by a drift-prone counter.
+    public enum MeterObserver { case popover, settings }
+    /// Meter surfaces currently on screen. The gated UI-publish timer runs iff this set is
+    /// non-empty. A Set keyed by source (NOT a blind counter) makes the lifecycle idempotent:
+    /// a duplicate begin for the same source is a no-op, and the state self-heals on the next
+    /// clean begin/end cycle even if a SwiftUI `onDisappear` / window `willClose` was missed —
+    /// so the timer can never be permanently leaked the way a drifting counter could.
+    private var activeMeterObservers: Set<MeterObserver> = []
     private var consecutiveTrimmedHotTicks = 0
     private var consecutiveOutputClipTicks = 0
     private var lastSmartLevelAdjustTime: Date?
@@ -367,11 +376,12 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         // Fixed pipeline latency: ring-buffer target (2400 samples) + one STFT frame
         // (960 samples) @ 48 kHz. Reported as the "added latency" readout, not measured.
         addedLatencyMs = Float(2400 + 960) / 48000.0 * 1000.0   // = 70 ms
-        startMeterTimer()
+        startControlPump()   // always-on audio-control loop (Smart Level + loudness); never gated
     }
 
     deinit {
-        meterTimer?.invalidate()
+        controlPumpTimer?.invalidate()
+        uiPublishTimer?.invalidate()
         deviceRefreshWorkItem?.cancel()
         if let block = hardwareDevicesListener {
             AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject),
@@ -558,7 +568,7 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         loudnessTargetLUFS = -14
         isApplyingPreset = false
 
-        smartLevelMessage = nil
+        meterSnapshot.smartLevelMessage = nil
         currentLoudnessGain = 1
         voiceChain.setLoudnessGain(1.0)
         dspEngine.suppressionStrength = suppressionStrength
@@ -1086,14 +1096,22 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         persistSettings()
     }
 
-    private func startMeterTimer() {
-        meterTimer?.invalidate()
-        meterTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
-            self?.publishMeterTelemetry()
+    // MARK: Control pump (always-on) vs UI publish (gated) — see "Metering & loudness" in AGENTS.md.
+
+    /// Start the ALWAYS-ON audio-control pump. Created once at init and lives for the app's
+    /// lifetime — it is the single owner of the `t*` read-and-reset and runs BOTH control loops
+    /// (Smart Level + loudness normalization) regardless of popover/Settings visibility. It writes
+    /// ONLY plain `meterSnapshot` fields, so it triggers ZERO SwiftUI invalidation. The 25 Hz
+    /// cadence is preserved so the loudness slew (`slewDb:1`/tick ≈ 25 dB/s) and the Smart Level
+    /// tick thresholds keep their tuned timing unchanged.
+    private func startControlPump() {
+        controlPumpTimer?.invalidate()
+        controlPumpTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
+            self?.runControlPump()
         }
     }
 
-    private func publishMeterTelemetry() {
+    private func runControlPump() {
         let rawPeak = tRawInputPeak
         let trimmedPeak = tTrimmedInputPeak
         let outPeak = tOutputPeak
@@ -1111,27 +1129,31 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
             currentInputVolume: inputVolumeValue,
             smartLevelEnabled: smartLevelEnabled)
 
-        inputLevel = inputDecision.inputLevel
-        rawInputPeak = rawPeak
-        trimmedInputPeak = trimmedPeak
-        outputPeak = outPeak
-        isInputNearCeiling = inputDecision.isInputNearCeiling
-        isOutputClipping = SmartLevelController.isClipping(outPeak) || outputClipCount > 0
-        isSourceMicClipping = inputDecision.isSourceMicClipping
-
         consecutiveTrimmedHotTicks = inputDecision.consecutiveTrimmedHotTicks
 
-        // Live HUD: output level/peak/clip + LUFS update whenever audio flows (the
-        // existing recordOutputTelemetry runs regardless of AI, like Smart Level). The
-        // AI-activity bar is genuinely AI-specific, so it reads 0 when AI is off (the
-        // DSP scalar would otherwise freeze at its last value — no processHop runs).
-        outputLevel = tOutputLevel
-        aiActivity = isAIEnabled ? dspEngine.aiActivity : 0
-        momentaryLUFS = tMomentaryLUFS
-        integratedLUFS = tIntegratedLUFS
-        // Loudness normalization: compute a slew-limited make-up gain on main from the
-        // integrated-LUFS snapshot and push it to the chain (lock-free scalar). When the
-        // meter has no measurement (silence below the gate), the gain is held — no pumping.
+        let outputClipping = SmartLevelController.isClipping(outPeak) || outputClipCount > 0
+
+        // Write derived telemetry into the plain snapshot ONLY (read by the gated UI publish loop).
+        // NO @Published is touched here → zero SwiftUI invalidation while the pump runs at 25 Hz.
+        meterSnapshot.inputLevel = inputDecision.inputLevel
+        meterSnapshot.rawInputPeak = rawPeak
+        meterSnapshot.trimmedInputPeak = trimmedPeak
+        meterSnapshot.outputPeak = outPeak
+        meterSnapshot.isInputNearCeiling = inputDecision.isInputNearCeiling
+        meterSnapshot.isOutputClipping = outputClipping
+        meterSnapshot.isSourceMicClipping = inputDecision.isSourceMicClipping
+        // Live HUD: output level/peak/clip + LUFS update whenever audio flows (recordOutputTelemetry
+        // runs regardless of AI, like Smart Level). AI activity is AI-specific, so it reads 0 when
+        // AI is off (the DSP scalar would otherwise freeze at its last value — no processHop runs).
+        meterSnapshot.outputLevel = tOutputLevel
+        meterSnapshot.aiActivity = isAIEnabled ? dspEngine.aiActivity : 0
+        meterSnapshot.momentaryLUFS = tMomentaryLUFS
+        meterSnapshot.integratedLUFS = tIntegratedLUFS
+
+        // Loudness normalization control loop — ALWAYS-ON (gated only by the feature flag, never by
+        // popover visibility). Slew-limited make-up gain computed on main from the integrated-LUFS
+        // snapshot and pushed to the chain (lock-free scalar). When the meter has no measurement
+        // (silence below the gate), the gain is held — no pumping.
         if loudnessNormEnabled {
             let g = LoudnessMeter.normalizationGain(
                 measuredLUFS: tIntegratedLUFS, targetLUFS: loudnessTargetLUFS,
@@ -1139,10 +1161,11 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
             currentLoudnessGain = g
             voiceChain.setLoudnessGain(g)
         }
-        let outputWasClipping = SmartLevelController.isClipping(outPeak) || outputClipCount > 0
         consecutiveOutputClipTicks = SmartLevelController.advanceHotTicks(
-            current: consecutiveOutputClipTicks, wasHot: outputWasClipping)
+            current: consecutiveOutputClipTicks, wasHot: outputClipping)
 
+        // Single owner of the render/capture-written t* read-and-reset (the UI publish loop is
+        // snapshot-read-only and never resets these — prevents the double-consume / starvation hazard).
         tInputLevel = 0
         tRawInputPeak = 0
         tTrimmedInputPeak = 0
@@ -1155,13 +1178,42 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         updateSmartLevel()
     }
 
+    /// Begin observing the live meters for `source` (e.g. the popover's `onAppear`). The popover
+    /// and the Settings window observe through ONE shared UI-publish timer, started on the
+    /// empty → non-empty transition. Idempotent: a duplicate begin for the same source is a no-op
+    /// (Set insert), so a stray/repeated `onAppear` can never spawn a second timer or inflate the
+    /// state. Seeds `meterModel` from the latest snapshot BEFORE the first timed publish so the
+    /// first visible frame after a closed interval is correct, not stale.
+    public func beginMeterObservation(_ source: MeterObserver) {
+        let wasEmpty = activeMeterObservers.isEmpty
+        activeMeterObservers.insert(source)
+        guard wasEmpty, uiPublishTimer == nil else { return }
+        meterModel.apply(meterSnapshot)
+        uiPublishTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            self.meterModel.apply(self.meterSnapshot)
+        }
+    }
+
+    /// End observing the live meters for `source` (e.g. the popover's `onDisappear`). Stops the
+    /// UI-publish timer only when the LAST surface goes away; the always-on control pump keeps
+    /// running so Smart Level + loudness normalization stay live with every meter view closed.
+    /// Idempotent: ending an inactive source is a no-op, and because each source is tracked
+    /// independently the state self-heals on the next clean cycle even if an end was missed.
+    public func endMeterObservation(_ source: MeterObserver) {
+        guard activeMeterObservers.remove(source) != nil else { return }
+        guard activeMeterObservers.isEmpty else { return }
+        uiPublishTimer?.invalidate()
+        uiPublishTimer = nil
+    }
+
     private func updateSmartLevel() {
         guard smartLevelEnabled else { return }
         let now = Date()
         if let last = lastSmartLevelAdjustTime, now.timeIntervalSince(last) < 0.4 { return }
 
-        if isSourceMicClipping {
-            smartLevelMessage = "Source mic is clipping before NoNoise. Lower macOS/device input volume if available."
+        if meterSnapshot.isSourceMicClipping {
+            meterSnapshot.smartLevelMessage = "Source mic is clipping before NoNoise. Lower macOS/device input volume if available."
         }
 
         if let next = SmartLevelController.nextInputVolume(
@@ -1169,7 +1221,7 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
             setInputVolume(next)
             consecutiveTrimmedHotTicks = 0
             lastSmartLevelAdjustTime = now
-            smartLevelMessage = "Smart Level reduced Input Volume to \(Int(next * 100))%."
+            meterSnapshot.smartLevelMessage = "Smart Level reduced Input Volume to \(Int(next * 100))%."
             return
         }
 
@@ -1179,9 +1231,9 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
             setOutputGainForSmartLevel(next)
             consecutiveOutputClipTicks = 0
             lastSmartLevelAdjustTime = now
-            smartLevelMessage = "Smart Level reduced Output Gain to \(Int(next * 100))%."
-        } else if !isInputNearCeiling && !isOutputClipping && !isSourceMicClipping {
-            smartLevelMessage = nil
+            meterSnapshot.smartLevelMessage = "Smart Level reduced Output Gain to \(Int(next * 100))%."
+        } else if !meterSnapshot.isInputNearCeiling && !meterSnapshot.isOutputClipping && !meterSnapshot.isSourceMicClipping {
+            meterSnapshot.smartLevelMessage = nil
         }
     }
 

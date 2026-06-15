@@ -2,6 +2,39 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Menu-bar perf: meter observation made idempotent per source (Codex review)
+- Codex code review (gpt-5.5, IMPORTANT) flagged that `begin/endMeterObservation` used a blind
+  counter, so a duplicate popover `onAppear` or a missed `onDisappear` drifted `meterObserverCount`
+  permanently and could leave the gated UI-publish timer running with no visible meter surface.
+- Fix: track active surfaces in a `Set<MeterObserver>` (`.popover` / `.settings`) and run the timer
+  iff the set is non-empty. Duplicate begins are no-ops (Set insert) and the state self-heals on the
+  next clean begin/end cycle. Call sites pass their source. `swift test` (203) + `swift build` pass.
+- `Sources/Core/AudioModel.swift`, `Sources/App/ContentView.swift`, `Sources/Core/MeterModel.swift`.
+
+### 2026-06-15 — Menu-bar perf: split 25 Hz telemetry into a control pump + gated UI publish
+- Fixed sluggish menu-bar popover open + laggy AI toggle. **Root cause:** a 25 Hz `@Published`
+  telemetry storm on `AudioModel` — the single meter timer wrote ~11 `@Published` fields every
+  40 ms, and because the `MenuBarExtra` label AND the whole `ContentView` observe `AudioModel`,
+  every tick re-evaluated the Scene (re-rendering the status-bar `NSImage` via `lockFocus`, even
+  while the popover was CLOSED) and re-diffed the entire popover — starving the main thread so the
+  open/toggle felt delayed. The toggle handler itself was already cheap.
+- **Fix A (zero-risk image caching):** `NoNoiseLogoImage.menuBar(isActive:)` returns a single cached
+  template `NSImage` (the draw ignored `isActive`) instead of a fresh `lockFocus` render per call;
+  `NoNoiseLogoAsset` caches the header PNG once instead of reading it from disk inside a SwiftUI body.
+- **Fix B + C (telemetry isolation, load-bearing):** moved the high-frequency meter fields off
+  `AudioModel` onto a new `MeterModel` (`Sources/Core/MeterModel.swift`). Split the single meter
+  `Timer` into (1) an ALWAYS-ON ~25 Hz **control pump** (`startControlPump`/`runControlPump`) — the
+  sole owner of the `t*` read-and-reset; runs Smart Level + loudness normalization; writes a plain
+  `MeterSnapshot` (no `@Published` → zero SwiftUI churn); and (2) a **popover-gated** UI-publish timer
+  (`beginMeterObservation`/`endMeterObservation`, reference-counted across popover + Settings) that
+  copies the snapshot into `MeterModel`. Scoped the meter reads into `StatusMeters`/`LiveHUDCard`
+  (popover) and `GeneralSettingsView` (Settings) so only those subviews observe the 25 Hz stream.
+- Cadence parity preserved (25 Hz) so the loudness slew (`slewDb:1`/tick) + Smart Level tick
+  thresholds keep their tuned timing; both control loops stay live with the popover closed. Seeded on
+  `begin` so meters aren't stale on reopen. `swift test` (203), `swift build`, release arm64 all pass.
+- `Sources/Core/MeterModel.swift` (new), `Sources/Core/AudioModel.swift`,
+  `Sources/App/NoNoiseLogoMark.swift`, `Sources/App/ContentView.swift`, `Sources/App/SettingsView.swift`.
+
 ### 2026-06-15 — Settings reset added
 - Added a destructive-confirmed **Reset Settings** card in Settings → General. It restores
   audio/device settings to defaults (Meeting preset, full suppression, unity input/output gain,

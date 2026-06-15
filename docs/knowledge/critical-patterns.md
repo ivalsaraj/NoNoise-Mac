@@ -35,3 +35,20 @@ hard rules; the full rationale is in `AGENTS.md`.
 - **Rule:** Plain `var Float`, written from main, read on the render thread. 32-bit aligned
   scalar load/store is atomic on arm64 — **do not add locks**. Keep blend math in the pure
   static helpers (`minGain`, `resolveOutputBin`) so it stays unit-testable without CoreML.
+
+## [PATTERN] Never bind the MenuBarExtra label / whole popover to a high-frequency `@Published` stream
+- **Source:** `docs/knowledge/knowledge1.md`, 2026-06-15.
+- **Where:** `AudioModel` meter fields, the `MenuBarExtra` label (`NoNoiseMacApp.swift`), `ContentView`,
+  `MeterModel.swift`, `NoNoiseLogoMark.swift`.
+- **Symptom:** Slow menu-bar popover open + laggy AI toggle — no crash, no log, just sluggishness
+  (easy to misattribute to the toggle handler).
+- ❌ **WRONG:** Put ~25 Hz live-meter fields as `@Published` on `AudioModel`, which the `MenuBarExtra`
+  label and the whole `ContentView` observe. Every tick fires `objectWillChange`, re-evaluating the
+  Scene (re-rendering the status `NSImage` via `lockFocus` even while CLOSED) and re-diffing the
+  popover → main-thread saturation.
+- ✅ **CORRECT:** Keep high-frequency fields on a dedicated `MeterModel: ObservableObject` observed
+  ONLY by leaf meter subviews. Drive it from an always-on, NON-publishing main-thread control pump
+  (the single `t*` owner; runs Smart Level + loudness) plus a popover-gated, snapshot-read-only UI
+  publish timer. Never `lockFocus`/disk-read inside a SwiftUI `body`; cache static images as `static let`.
+- **Why:** `objectWillChange` on an app-wide model fans out to EVERY observer, including the
+  always-mounted Scene/label; at 25 Hz that starves the run loop and the failure is silent (perf, not correctness).
