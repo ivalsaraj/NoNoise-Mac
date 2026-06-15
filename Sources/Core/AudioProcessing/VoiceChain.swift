@@ -53,6 +53,71 @@ enum ClarityProfile {
     static let deEssReleaseMs: Float = 80
 }
 
+/// "Mouth Noise Finisher" intensity. Controls the de-plosive (P-pop/thump suppressor)
+/// and de-click (lip-smack/mouth-click suppressor) stages. `.off` is a true no-op —
+/// both stages return `x` unchanged, and all existing presets are unaffected.
+public enum MouthNoiseLevel: String, CaseIterable, Identifiable, Sendable {
+    case off
+    case low
+    case medium
+    case high
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .off:    return "Off"
+        case .low:    return "Low"
+        case .medium: return "Medium"
+        case .high:   return "High"
+        }
+    }
+
+    /// Maximum de-plosive low-band reduction in dB. Intentionally conservative —
+    /// voiced stops (B, D, G) share low-band energy with plosives; excess reduction
+    /// dulls them. Starting points, tunable after listening.
+    public var maxPlosReductionDb: Float {
+        switch self {
+        case .off:    return 0
+        case .low:    return 8
+        case .medium: return 14
+        case .high:   return 20
+        }
+    }
+
+    /// De-click gain floor (linear). How far the gain drops during a click event.
+    /// `.off` = 1.0 (identity); lower = more suppression.
+    public var clickGainFloor: Float {
+        switch self {
+        case .off:    return 1.0
+        case .low:    return 0.50   // −6 dB
+        case .medium: return 0.35   // ~−9 dB
+        case .high:   return 0.25   // −12 dB
+        }
+    }
+}
+
+/// Fixed band/timing constants for the mouth-noise finisher stages (tunable starting points).
+/// All values chosen conservatively — they target artifacts that are distinctly sharper or
+/// more low-heavy than any voiced phoneme.
+enum MouthNoiseProfile {
+    // De-plosive
+    static let plosiveSplitHz: Float   = 120    // low/high split frequency
+    static let plosiveThresholdDb: Float = -42  // total-energy floor to arm detection
+    static let plosiveLowRatioGuard: Float = 0.60  // low/(total) ratio gate
+    static let plosiveAttackMs: Float  = 0.3
+    static let plosiveReleaseMs: Float = 25
+
+    // De-click
+    static let clickFastAttackMs: Float  = 0.05
+    static let clickFastReleaseMs: Float = 2.0
+    static let clickSlowAttackMs: Float  = 50.0
+    static let clickSlowReleaseMs: Float = 200.0
+    static let clickRatio: Float         = 6.0  // fast/slow ratio to flag a click
+    static let clickMinThresholdDb: Float = -54  // absolute floor (quiet rooms don't trigger)
+    static let clickHoldReleaseMs: Float = 4.0  // how long to hold + release gain
+}
+
 public struct VoiceChainSettings: Sendable, Equatable {
     public var enabled: Bool
     public var highPassHz: Float
