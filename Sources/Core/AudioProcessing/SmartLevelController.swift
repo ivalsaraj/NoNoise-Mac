@@ -32,6 +32,57 @@ public enum SmartLevelController {
         }
     }
 
+    /// Telemetry captured around the in-place Input Volume trim.
+    /// `rawPeak`/`rawClipSamples` describe the physical/source signal (drives the
+    /// source-clipping warning); `trimmedPeak`/`trimmedRMS`/`trimmedHotSamples`
+    /// describe the signal NoNoise actually processes (drives the input meter + guard).
+    public struct InputTelemetry: Equatable {
+        public let rawPeak: Float
+        public let trimmedPeak: Float
+        public let trimmedRMS: Float
+        public let rawClipSamples: Int
+        public let trimmedHotSamples: Int
+    }
+
+    /// Measure raw source levels, apply Input Volume in place, then measure the trimmed
+    /// signal. Allocation-free: scalar loops + an optional in-place vDSP multiply only.
+    /// This is the production telemetry seam shared by `AudioModel.captureOutput(...)`.
+    public static func applyInputVolumeAndMeasure(_ samples: UnsafeMutablePointer<Float>,
+                                                  count: Int, volume: Float) -> InputTelemetry {
+        guard count > 0 else {
+            return InputTelemetry(rawPeak: 0, trimmedPeak: 0, trimmedRMS: 0,
+                                  rawClipSamples: 0, trimmedHotSamples: 0)
+        }
+        var rawPeak: Float = 0
+        var rawClipSamples = 0
+        for i in 0..<count {
+            let mag = abs(samples[i])
+            rawPeak = max(rawPeak, mag)
+            if mag >= clipThreshold { rawClipSamples += 1 }
+        }
+
+        var scalar = clampInputVolume(volume)
+        if scalar != 1 {
+            vDSP_vsmul(samples, 1, &scalar, samples, 1, vDSP_Length(count))
+        }
+
+        var trimmedPeak: Float = 0
+        var trimmedHotSamples = 0
+        var sum: Float = 0
+        for i in 0..<count {
+            let x = samples[i]
+            let mag = abs(x)
+            trimmedPeak = max(trimmedPeak, mag)
+            sum += x * x
+            if mag >= nearCeilingThreshold { trimmedHotSamples += 1 }
+        }
+
+        return InputTelemetry(rawPeak: rawPeak, trimmedPeak: trimmedPeak,
+                              trimmedRMS: sqrt(sum / Float(count)),
+                              rawClipSamples: rawClipSamples,
+                              trimmedHotSamples: trimmedHotSamples)
+    }
+
     public static func measurePeak(_ samples: [Float]) -> Float {
         guard !samples.isEmpty else { return 0 }
         var peak: Float = 0
@@ -89,5 +140,38 @@ public enum SmartLevelController {
     /// Raw-side source clipping: ADC/mic already distorted before NoNoise trim can help.
     public static func isSourceMicClipping(rawPeak: Float, rawClipSampleCount: Int) -> Bool {
         isClipping(rawPeak) || rawClipSampleCount > 0
+    }
+
+    /// Input-side guard contract published by `AudioModel.publishMeterTelemetry()`.
+    /// `inputLevel` is the trimmed meter value; the source warning and the trimmed
+    /// near-ceiling decision are kept separate so raw source clipping alone never
+    /// forces Smart Level to lower a trimmed signal that is already safe.
+    public struct InputGuardDecision: Equatable {
+        public let inputLevel: Float
+        public let isSourceMicClipping: Bool
+        public let isInputNearCeiling: Bool
+        public let consecutiveTrimmedHotTicks: Int
+        public let suggestedInputVolume: Float?
+    }
+
+    /// Pure mirror of AudioModel's input-side meter + Smart Level decision. Lets the raw
+    /// vs trimmed contract be unit-tested without constructing `AudioModel`. UI pacing
+    /// (date/rate-limit) stays in `AudioModel.updateSmartLevel()`.
+    public static func evaluateInputGuard(telemetry: InputTelemetry,
+                                          currentHotTicks: Int,
+                                          currentInputVolume: Float,
+                                          smartLevelEnabled: Bool) -> InputGuardDecision {
+        let sourceClipping = isSourceMicClipping(rawPeak: telemetry.rawPeak,
+                                                 rawClipSampleCount: telemetry.rawClipSamples)
+        let inputNearCeiling = isNearCeiling(telemetry.trimmedPeak)
+        let trimmedWasHot = inputNearCeiling || telemetry.trimmedHotSamples > 0
+        let nextTicks = advanceHotTicks(current: currentHotTicks, wasHot: trimmedWasHot)
+        return InputGuardDecision(
+            inputLevel: telemetry.trimmedRMS,
+            isSourceMicClipping: sourceClipping,
+            isInputNearCeiling: inputNearCeiling,
+            consecutiveTrimmedHotTicks: nextTicks,
+            suggestedInputVolume: nextInputVolume(
+                current: currentInputVolume, hotTicks: nextTicks, enabled: smartLevelEnabled))
     }
 }

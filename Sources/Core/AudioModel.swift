@@ -686,18 +686,26 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         let trimmedHotCount = tTrimmedInputHotCount
         let outputClipCount = tOutputClipCount
 
-        inputLevel = tInputLevel
+        // Input-side meter + Smart Level contract goes through the pure helper so the raw
+        // (source) vs trimmed (processed) split matches what SmartLevelControllerTests prove.
+        let inputTelemetry = SmartLevelController.InputTelemetry(
+            rawPeak: rawPeak, trimmedPeak: trimmedPeak, trimmedRMS: tInputLevel,
+            rawClipSamples: Int(tRawInputClipCount), trimmedHotSamples: Int(trimmedHotCount))
+        let inputGuard = SmartLevelController.evaluateInputGuard(
+            telemetry: inputTelemetry,
+            currentHotTicks: consecutiveTrimmedHotTicks,
+            currentInputVolume: inputVolumeValue,
+            smartLevelEnabled: smartLevelEnabled)
+
+        inputLevel = inputGuard.inputLevel
         rawInputPeak = rawPeak
         trimmedInputPeak = trimmedPeak
         outputPeak = outPeak
-        isInputNearCeiling = SmartLevelController.isNearCeiling(trimmedPeak)
+        isInputNearCeiling = inputGuard.isInputNearCeiling
         isOutputClipping = SmartLevelController.isClipping(outPeak) || outputClipCount > 0
-        isSourceMicClipping = SmartLevelController.isSourceMicClipping(
-            rawPeak: rawPeak, rawClipSampleCount: Int(tRawInputClipCount))
+        isSourceMicClipping = inputGuard.isSourceMicClipping
 
-        let trimmedWasHot = SmartLevelController.isNearCeiling(trimmedPeak) || trimmedHotCount > 0
-        consecutiveTrimmedHotTicks = SmartLevelController.advanceHotTicks(
-            current: consecutiveTrimmedHotTicks, wasHot: trimmedWasHot)
+        consecutiveTrimmedHotTicks = inputGuard.consecutiveTrimmedHotTicks
         let outputWasClipping = SmartLevelController.isClipping(outPeak) || outputClipCount > 0
         consecutiveOutputClipTicks = SmartLevelController.advanceHotTicks(
             current: consecutiveOutputClipTicks, wasHot: outputWasClipping)
@@ -842,33 +850,14 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         let convertedFrames = Int(outputBuffer.frameLength)
         
         if convertedFrames > 0, let floatData = outputBuffer.floatChannelData?[0] {
-             var rawPeak: Float = 0
-             var sum: Float = 0
-             var rawClipSamples = 0
-             for i in 0..<convertedFrames {
-                 let x = floatData[i]
-                 let mag = abs(x)
-                 rawPeak = max(rawPeak, mag)
-                 sum += x * x
-                 if mag >= SmartLevelController.clipThreshold { rawClipSamples += 1 }
-             }
-             let rms = sqrt(sum / Float(convertedFrames))
+             // Trim in place and measure raw (source) + trimmed (NoNoise input) levels in one pass.
+             // The meter must reflect the trimmed signal that actually enters ringBuffer.write,
+             // while raw peak/clip still report physical/source clipping that trim cannot repair.
+             let t = SmartLevelController.applyInputVolumeAndMeasure(
+                 floatData, count: convertedFrames, volume: realtimeInputVolume)
 
-             var inputVolume = realtimeInputVolume
-             if inputVolume != 1 {
-                 vDSP_vsmul(floatData, 1, &inputVolume, floatData, 1, vDSP_Length(convertedFrames))
-             }
-
-             var trimmedPeak: Float = 0
-             var trimmedHotSamples = 0
-             for i in 0..<convertedFrames {
-                 let mag = abs(floatData[i])
-                 trimmedPeak = max(trimmedPeak, mag)
-                 if mag >= SmartLevelController.nearCeilingThreshold { trimmedHotSamples += 1 }
-             }
-
-             recordInputTelemetry(rawPeak: rawPeak, trimmedPeak: trimmedPeak, rms: rms,
-                                  rawClipSamples: rawClipSamples, trimmedHotSamples: trimmedHotSamples)
+             recordInputTelemetry(rawPeak: t.rawPeak, trimmedPeak: t.trimmedPeak, rms: t.trimmedRMS,
+                                  rawClipSamples: t.rawClipSamples, trimmedHotSamples: t.trimmedHotSamples)
 
              _ = self.ringBuffer.write(floatData, count: convertedFrames)
         }
