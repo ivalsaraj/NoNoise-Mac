@@ -74,6 +74,55 @@ rejects moved local tags and breaks normal sync. Stable assets use fixed names
 (`NoNoiseMac.app.zip`, `NoNoiseMacCLI`, `NoNoiseMic.driver.zip`, `SHA256SUMS`); versioned releases
 use tag-specific filenames.
 
+## How to cut a versioned release (AI agent instructions)
+
+Use `release.sh` — do NOT create tags manually. The script bumps the version in `Info.plist`,
+commits, creates an **annotated** git tag carrying the release notes, then pushes both to trigger
+CI. The release notes in the tag body become the GitHub release description.
+
+**Step 1 — write the release notes to a file:**
+
+```markdown
+## What's New
+
+- Concise, user-facing description of each new feature or improvement.
+  Start with a verb: "Added X", "Improved Y", "Removed Z".
+  One bullet per item. No implementation details — say what it does for the user.
+
+## Bug Fixes
+
+- What broke and what it does now. One bullet per fix.
+  Example: "Fixed audio dropout when switching input devices during an active session."
+
+## Notes
+
+- Breaking changes, migration steps, known limitations, or anything the user must act on.
+  Omit this section entirely if there's nothing to say.
+```
+
+**Rules for good release notes:**
+- Only include sections that have content — omit empty ones entirely
+- No version number in the notes body (the release title already has it)
+- No marketing language — users are technical, be direct
+- Do NOT add an install or signing note — CI appends it automatically
+- Keep bullets to one line each; wrap long bullets with a sub-list if needed
+
+**Step 2 — run the release script:**
+
+```bash
+./release.sh <version> --notes-file /path/to/notes.md
+# Example:
+./release.sh 1.3.0 --notes-file /tmp/release-notes.md
+```
+
+The script requires:
+- You are on the `main` branch with no uncommitted changes
+- Version is semver (`major.minor.patch`, e.g. `1.3.0`)
+- The notes file is non-empty
+
+**What happens next:** CI builds arm64 binaries, bundles the app + CLI + driver, and publishes
+the GitHub release with your notes plus the standard install footer. Takes ~2–5 min.
+
 ## Entitlements & signing
 `bundle.sh` codesigns with `Resources/NoNoiseMac.entitlements`, kept **intentionally minimal** —
 exactly two keys:

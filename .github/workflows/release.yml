@@ -99,12 +99,31 @@ jobs:
             shasum -a 256 release-assets/* > "release-assets/SHA256SUMS-${TAG}.txt"
           fi
 
+      - name: Prepare release notes
+        run: |
+          TAG="${{ steps.release_target.outputs.tag }}"
+          IS_STABLE="${{ steps.release_target.outputs.is_stable }}"
+          if [ "$IS_STABLE" != "true" ]; then
+            # Extract the body from the annotated tag (everything after the first blank line).
+            # git for-each-ref is reliable even when HEAD is detached.
+            git for-each-ref --format='%(contents:body)' "refs/tags/$TAG" > /tmp/release-notes.md
+
+            if grep -q '[^[:space:]]' /tmp/release-notes.md; then
+              # Append standard install footer
+              printf '\n---\n\n> **Apple Silicon only.** First launch may require right-click → Open (ad-hoc signed, no notarization).\n' >> /tmp/release-notes.md
+            else
+              # Lightweight tag or empty message — minimal fallback
+              echo 'Apple Silicon build of NoNoise Mac. First launch may require right-click → Open (ad-hoc signed).' > /tmp/release-notes.md
+            fi
+          fi
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ steps.release_target.outputs.tag }}"
           IS_STABLE="${{ steps.release_target.outputs.is_stable }}"
+          TARGET_SHA="${{ steps.release_target.outputs.target_sha }}"
 
           if [ "$IS_STABLE" = "true" ]; then
             if gh release view "$TAG" >/dev/null 2>&1; then
@@ -124,5 +143,5 @@ jobs:
           else
             gh release create "$TAG" release-assets/* \
               --title "NoNoise Mac $TAG" \
-              --notes "Apple Silicon build of NoNoise Mac. First launch may require right-click → Open because the app is ad-hoc signed."
+              --notes-file /tmp/release-notes.md
           fi
