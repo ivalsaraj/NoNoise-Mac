@@ -364,6 +364,13 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
 
     private func loadSettings() {
         let d = UserDefaults.standard
+        // Load saved profiles BEFORE any early return. Profiles persist independently of
+        // the Tier 1 settings: saveCurrentAsProfile writes only `mv.profiles` (never `mv.preset`),
+        // so a user who saved a profile from the default state (no `mv.preset` yet) must still
+        // see it on relaunch. Tolerant: corrupt/absent → empty array.
+        if let data = d.data(forKey: PrefKey.profiles) {
+            profiles = VoiceProfileStore.decodeSafe(from: data).profiles
+        }
         guard let raw = d.string(forKey: PrefKey.preset),
               let preset = VoicePreset(rawValue: raw) else {
             // First launch: keep defaults (Meeting) and push them to the DSP.
@@ -392,10 +399,6 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         }
         // Single explicit configure from the final restored state.
         applyVoiceChain()
-        // Load saved profiles (added by Voice Profiles plan). Tolerant: corrupt/absent → empty array.
-        if let data = UserDefaults.standard.data(forKey: PrefKey.profiles) {
-            profiles = VoiceProfileStore.decodeSafe(from: data).profiles
-        }
     }
     
     /// Resolve a device UID to its AudioObjectID via the HAL. Works for INPUT-only devices too

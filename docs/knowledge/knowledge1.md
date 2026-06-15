@@ -5,6 +5,21 @@ for the must-read failure modes.
 
 ---
 
+### [GOTCHA] 2026-06-15 — `loadSettings()` early-return skipped Voice Profiles decode
+
+- **Symptom**: A first-launch user who saved a Voice Profile from the default state saw it vanish
+  after relaunch (data was still in `UserDefaults`, just not loaded into the UI).
+- **Root cause**: `saveCurrentAsProfile` persists ONLY `mv.profiles` (via `persistProfiles()`),
+  never `mv.preset`. `loadSettings()` decoded `mv.profiles` at the END of the method, AFTER the
+  `guard let raw = d.string(forKey: PrefKey.preset) else { … return }` early-return for absent
+  `mv.preset`. So `mv.profiles`-without-`mv.preset` hit the early return and never loaded profiles.
+- **Rule**: Load independently-persisted collections (`mv.profiles`) at the TOP of `loadSettings()`,
+  BEFORE any preset/settings early-return. Persistence keys that are written by different code paths
+  must be read on every launch path, not gated behind another key's presence.
+- **Files**: `Sources/Core/AudioModel.swift` (`loadSettings`).
+
+---
+
 ### [DECISION] 2026-06-15 — Voice Profiles: extensible versioned schema via optional Codable fields
 
 **Problem**: Adding new user-tunable settings (Metering & Loudness LUFS target, Mouth-noise
