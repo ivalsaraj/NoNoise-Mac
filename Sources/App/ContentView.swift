@@ -11,6 +11,7 @@ struct ContentView: View {
             statusCard
             modeCard
             devicesCard
+            driverStatusRow
             footer
         }
         .padding(16)
@@ -137,6 +138,31 @@ struct ContentView: View {
                 }
                 .labelsHidden()
             }
+        }
+        .nnCard()
+    }
+
+    // MARK: - Driver status
+    // The "ready" state is the "✅ Slack will hear you" north-star signal; both states are kept to
+    // one compact row (the full health dashboard + system-default-trap warnings are Spec B).
+    private var driverStatusRow: some View {
+        HStack(spacing: 8) {
+            if audioModel.driverInstalled {
+                Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("NoNoise Mic ready").font(.caption).fontWeight(.medium)
+                    Text("Pick “NoNoise Mic” as the mic in Slack/Zoom/Meet/OBS.")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+            } else {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("NoNoise Mic not installed").font(.caption).fontWeight(.medium)
+                    Text("Run ./install-driver.sh to add the virtual mic.")
+                        .font(.caption2).foregroundColor(.secondary)
+                }
+            }
+            Spacer()
         }
         .nnCard()
     }
