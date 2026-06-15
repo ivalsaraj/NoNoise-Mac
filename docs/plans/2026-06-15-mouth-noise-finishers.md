@@ -30,9 +30,9 @@ This plan satisfies it structurally, not by taste alone:
 
 1. **De-plosive — identity at rest.** The plosive detector watches the ratio of low-band energy to total energy (`low / total`). During normal voiced phonemes this ratio stays within a broad normal range — only a plosive transient drives it anomalously high while simultaneously above a total-energy threshold. Below threshold, `gain = 1.0` exactly — no subtraction, no filter insertion, no coloration. The gain taper (attack 0.3 ms, release 25 ms) is fast enough to catch the pop and short enough to release before the following vowel is colored.
 
-2. **De-click — identity at rest.** The click detector watches instantaneous broadband energy relative to a slow background RMS. A mouth click appears as a sudden spike `> clickRatio × background`. Outside that spike, `gain = 1.0` exactly. The hold time (≤ 5 ms) ensures that even a consonant burst that triggers the detector recovers before affecting the following vowel.
+2. **De-click — identity at rest.** The click detector watches instantaneous broadband energy relative to a slow background RMS *floored at the absolute minimum threshold* (a warm-up floor, so a not-yet-settled background after silence can't fabricate a huge ratio). A mouth click appears as a sudden, SHORT spike `> clickRatio × max(background, floor)`. Crucially, the gate only attenuates while the spike is brief (`≤ maxClickSamples ≈ 1 ms`); a spike that *sustains* (a voiced phoneme onset) makes the gate latch off (`gain = 1.0`) until the ratio falls — so first syllables are never dulled. Outside a genuine click, `gain = 1.0` exactly. The hold time (≤ 5 ms) ensures even a consonant burst that triggers the detector recovers before affecting the following vowel.
 
-3. **Conservative, capped gain reduction even at High** (de-plosive: up to 18 dB; de-click: up to 12 dB) to never destroy the transient character of voiced stops (B, D, G) that are NOT pops.
+3. **Conservative, capped gain reduction even at High** (de-plosive: up to 20 dB; de-click: up to 12 dB) to never destroy the transient character of voiced stops (B, D, G) that are NOT pops.
 
 4. **`mouthNoise == .off` is a true no-op.** Both types return `x` unchanged when disabled, and both `configure` arms call `setBypass()` on any internal biquads and zero all state — so existing Meeting/Podcast/Tutorial/Custom presets behave **byte-for-byte as before**.
 
@@ -60,12 +60,12 @@ This plan satisfies it structurally, not by taste alone:
 
 A plosive is a wideband transient where the sub-100 Hz band is disproportionately energetic (the pressure wave). Detection strategy:
 
-1. A **low-band energy follower** tracking `|lowHP|^2` via one-pole smoothing (attack 0.1 ms, release 40 ms), where `lowHP` is the output of a Butterworth-style low-pass at ~120 Hz. We use a Biquad low-shelf at 120 Hz with gain 0 dB (no gain, just to isolate the low band) — or more precisely a second Biquad high-pass inverted: `low = x - hp(x)`. Implementation: store `lpSig = x - hp.process(x)` where `hp` is a 120 Hz high-pass.
-2. A **total-energy follower** tracking `|x|^2` via the same attack/release.
-3. **Plosive condition**: `lowEnv > plosThreshold && lowEnv > plosRatio × totalEnv`. The second condition (`lowRatio > plosRatio`) distinguishes a plosive (bottom-heavy) from a uniform transient (click or consonant burst).
+1. A **low-band signal** isolated as `lowSig = x - hp.process(x)`, where `hp` is a single 120 Hz high-pass biquad. **`hp.process` is called EXACTLY ONCE per input sample** — `Biquad.process` advances filter state on every call (`Biquad.swift:88`), so a second "peek" call (e.g. `hp.process(0)`) would corrupt the high-pass state on the render path. Detection therefore reads ONLY the already-computed scalar envelopes — never a second filter call.
+2. A **low-band energy follower** tracking `|lowSig|` via one-pole smoothing, and a **total-energy follower** tracking `|x|` via the same attack/release.
+3. **Plosive condition**: `totalEnv > plosThreshold && (lowEnv / totalEnv) >= plosRatioGuard`. The ratio `lowEnv / max(totalEnv, 1e-12)` is computed purely from the two scalar envelopes (NO extra filter advance). It distinguishes a plosive (bottom-heavy) from a uniform transient (click or consonant burst).
 4. When condition fires: apply a gain ramp to the **low-band signal** only — subtract `frac × lowSig` from `x`, exactly like the de-esser's subtractive pattern: `out = x - frac * lowSig`. `frac` ramps from 0 at threshold to `maxPlosReduction` above it, via the same `1 - 1/over` shape.
 
-This is subtractive and identity at rest: when `lowEnv <= plosThreshold`, `frac = 0`, `out = x` exactly.
+This is subtractive and identity at rest: when `totalEnv <= plosThreshold` (or the ratio gate fails), `frac = 0`, `out = x` exactly. The 120 Hz high-pass advances once per sample whether or not the gate fires, so detection state and render output stay coherent.
 
 #### De-click
 
@@ -73,10 +73,11 @@ A mouth click is a very short broadband transient — sharp rise in ALL frequenc
 
 1. A **fast envelope** tracking `|x|` with attack 0.05 ms, release 2 ms (near-instantaneous).
 2. A **slow background RMS** tracking `|x|` with attack 50 ms, release 200 ms (tracks the speech body, not transients).
-3. **Click condition**: `fastEnv > clickRatio × slowEnv && fastEnv > minClickThreshold`. The ratio test ensures clicks are detected relative to the local speech level — so a loud speaker doesn't suppress every voiced stop.
-4. When condition fires: set `clickGain` toward `clickGainFloor` (instantaneous attack); `clickGain` releases back to 1.0 over `holdAndRelease` ms (3–5 ms). Apply: `out = x × clickGain`.
+3. **Ratio test**: `fastEnv > clickRatio × max(slowEnv, minClickThreshold) && fastEnv > minClickThreshold`. Flooring the background at `minClickThreshold` (the "warm-up floor") stops a not-yet-settled slow envelope (≈0 after silence) from fabricating a huge ratio that false-triggers on the first voiced onset after a pause.
+4. **Click vs. onset by duration**: a click is a *few-sample* spike; a voiced onset is a spike that *sustains*. The gate counts consecutive tripped samples (`tripRun`). It only attenuates while `tripRun ≤ maxClickSamples` (~1 ms). Once `tripRun` exceeds that, the rise is voiced content — the gate **latches off** (snaps `gain` to 1.0) until the ratio falls back, so ordinary phoneme attacks and the voiced body are never dulled.
+5. When a click fires: set `gain` toward `gainFloor` (instantaneous attack); after the hold, `gain` releases back to 1.0 over `holdReleaseMs` (3–5 ms). Apply: `out = x × gain`.
 
-Identity at rest: when `fastEnv <= clickRatio × slowEnv`, `clickGain = 1.0`, `out = x` exactly.
+Identity at rest: when the ratio is not tripped (or it is tripped but latched as voiced content), `gain = 1.0`, `out = x` exactly. `slowEnv` starts at 0 (not a tiny epsilon) because the warm-up floor — not the initial value — guards the ratio against div-by-near-zero.
 
 ### Level → DSP mapping (the whole feature in one table)
 
@@ -189,6 +190,64 @@ final class MouthNoiseTests: XCTestCase {
                           "mid-band voice must not be significantly altered by the de-plosive")
     }
 
+    /// REGRESSION (state corruption): `DePlosive` must advance its internal high-pass
+    /// EXACTLY ONCE per input sample. `Biquad.process` mutates filter state on every
+    /// call, so a stray "peek" (e.g. `hp.process(0)`) would double-advance the filter
+    /// and desync detection from output. We prove single-advance by reconstructing the
+    /// same algorithm with our OWN single-advance high-pass and asserting byte-identical
+    /// output on a plosive-triggering signal (if the production code double-advanced, its
+    /// internal `lowSig` — and thus the subtracted output — would diverge from this
+    /// one-pass reference).
+    func testDePlosiveAdvancesFilterExactlyOncePerSample() {
+        let splitHz: Float = 120, thrDb: Float = -42, guardRatio: Float = 0.60
+        let maxRedDb: Float = 20, atkMs: Float = 0.3, relMs: Float = 25, sr: Float = 48000
+
+        var d = DePlosive()
+        d.configure(splitHz: splitHz, thresholdDb: thrDb, lowRatioGuard: guardRatio,
+                    maxReductionDb: maxRedDb, attackMs: atkMs, releaseMs: relMs,
+                    sampleRate: sr, enabled: true)
+
+        // One-pass reference: mirror DePlosive.process with a single hp.process(x) per sample.
+        var refHp = Biquad()
+        refHp.setHighPass(freq: splitHz, sampleRate: sr, q: 0.707)
+        let thrLin = powf(10, thrDb / 20)
+        let maxRed = min(1, 1 - powf(10, -abs(maxRedDb) / 20))
+        let atkC = expf(-1.0 / (max(atkMs, 0.01) * 0.001 * sr))
+        let relC = expf(-1.0 / (max(relMs, 0.01) * 0.001 * sr))
+        var refTotalEnv: Float = 0, refLowEnv: Float = 0
+
+        var maxDelta: Float = 0
+        for i in 0..<9600 {
+            // Plosive-shaped: strong 60 Hz + weak 500 Hz → triggers the gate so the
+            // subtractive branch (where any state desync would show up) is exercised.
+            let x = 0.7 * sinf(2 * Float.pi * 60  * Float(i) / sr)
+                  + 0.05 * sinf(2 * Float.pi * 500 * Float(i) / sr)
+
+            let y = d.process(x)
+
+            // Reference (single advance).
+            let hiSig = refHp.process(x)
+            let lowSig = x - hiSig
+            let totalMag = abs(x), lowMag = abs(lowSig)
+            let tC = totalMag > refTotalEnv ? atkC : relC
+            let lC = lowMag   > refLowEnv   ? atkC : relC
+            refTotalEnv = tC * refTotalEnv + (1 - tC) * totalMag
+            refLowEnv   = lC * refLowEnv   + (1 - lC) * lowMag
+            var ref = x
+            if refTotalEnv > thrLin {
+                let ratio = refLowEnv / max(refTotalEnv, 1e-12)
+                if ratio >= guardRatio {
+                    let over = refTotalEnv / thrLin
+                    let frac = maxRed * (1 - 1 / over)
+                    ref = x - frac * lowSig
+                }
+            }
+            maxDelta = max(maxDelta, abs(y - ref))
+        }
+        XCTAssertLessThan(maxDelta, 1e-6,
+                          "DePlosive must advance its high-pass exactly once per sample")
+    }
+
     // MARK: - DeClick
 
     /// Disabled de-click is a perfect identity.
@@ -272,6 +331,55 @@ final class MouthNoiseTests: XCTestCase {
                              "de-click gain must recover to near-unity within 20 ms after spike")
     }
 
+    /// REGRESSION (false positive): a normal VOICED ONSET after silence must NOT be
+    /// gated as a click. With a naive `slowEnv ≈ 0` init and a pure ratio test, the
+    /// first speech samples after a pause look like a huge fast/slow spike and get
+    /// attenuated — dulling first syllables. The warm-up floor + short-trip-run gate
+    /// must leave the onset essentially intact (only a sub-millisecond transient may
+    /// be touched, so the energy of the onset region is preserved).
+    func testDeClickVoicedOnsetAfterSilenceIsIdentity() {
+        var d = DeClick()
+        d.configure(fastAttackMs: 0.05, fastReleaseMs: 2, slowAttackMs: 50,
+                    slowReleaseMs: 200, clickRatio: 6.0, minThresholdDb: -54,
+                    holdReleaseMs: 4, gainFloor: 0.25,
+                    sampleRate: 48000, enabled: true)
+        // 200 ms of digital silence (slow background settles to ~0, like a real pause).
+        for _ in 0..<9600 { _ = d.process(0) }
+        // A voiced onset: a 200 Hz tone at speech level starting cold after the silence.
+        // Measure energy preserved over the first 50 ms of the onset (excluding only the
+        // first ~1 ms where a sub-millisecond transient gate may briefly act).
+        let onset = 2400, skip = 48   // skip ≈ 1 ms (the max click window)
+        var inSq: Float = 0, outSq: Float = 0
+        for i in 0..<onset {
+            let x = 0.3 * sinf(2 * Float.pi * 200 * Float(i) / 48000)
+            let y = d.process(x)
+            if i >= skip { inSq += x * x; outSq += y * y }
+        }
+        // After the first millisecond the onset must pass essentially unattenuated.
+        XCTAssertGreaterThan(sqrtf(outSq) / sqrtf(inSq), 0.97,
+                             "voiced onset after silence must not be gated as a click")
+    }
+
+    /// REGRESSION (false positive): the steady VOICED BODY (sustained loud speech)
+    /// must be a perfect passthrough — the click gate must never engage on it.
+    func testDeClickVoicedBodyUntouched() {
+        var d = DeClick()
+        d.configure(fastAttackMs: 0.05, fastReleaseMs: 2, slowAttackMs: 50,
+                    slowReleaseMs: 200, clickRatio: 6.0, minThresholdDb: -54,
+                    holdReleaseMs: 4, gainFloor: 0.25,
+                    sampleRate: 48000, enabled: true)
+        // Loud sustained voiced tone for 1 s.
+        var maxDelta: Float = 0
+        let n = 48000
+        for i in 0..<n {
+            let x = 0.6 * sinf(2 * Float.pi * 220 * Float(i) / 48000)
+            let y = d.process(x)
+            if i >= n / 4 { maxDelta = max(maxDelta, abs(y - x)) }   // measure after settle
+        }
+        XCTAssertLessThan(maxDelta, 1e-4,
+                          "sustained voiced body must pass through the de-click unchanged")
+    }
+
     // MARK: - MouthNoiseLevel
 
     func testMouthNoiseLevelOffIsZero() {
@@ -330,6 +438,32 @@ final class MouthNoiseTests: XCTestCase {
         XCTAssertTrue(chain.isActive)
     }
 
+    /// IDENTITY AT REST (limiter must not run in mouth-noise-only mode): with polish and
+    /// clarity OFF and mouthNoise = .high, a LOUD (> −1 dBFS) clean mid-band sine — NOT a
+    /// click or plosive — must pass through unchanged in steady state. The de-plosive/
+    /// de-click stages are attenuation-only and never raise level, so no limiter is needed;
+    /// running the limiter here would clamp a loud clean sample purely because the feature
+    /// is on (an identity violation). Probe at 1 kHz (above the 120 Hz plosive split) at
+    /// 0.95 amplitude (≈ −0.45 dBFS, above the −1 dBFS ceiling). We measure the SETTLED
+    /// second half: the de-click's sub-millisecond onset gate may briefly act on the cold
+    /// start (legitimate), but once the background settles the loud steady tone must pass
+    /// untouched — if the limiter were running it would clamp every sample above the ceiling.
+    func testMouthNoiseOnlyPreservesLoudCleanSignal() {
+        let chain = VoiceChain()
+        var s = VoiceChainSettings.disabled   // polish OFF, clarity OFF
+        s.mouthNoiseLevel = .high
+        chain.configure(s)
+        let n = 9600
+        var buf = [Float](repeating: 0, count: n)
+        for i in 0..<n { buf[i] = 0.95 * sinf(2 * Float.pi * 1000 * Float(i) / 48000) }
+        let ref = buf
+        buf.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+        var maxDelta: Float = 0
+        for i in (n / 2)..<n { maxDelta = max(maxDelta, abs(buf[i] - ref[i])) }   // settled half
+        XCTAssertLessThan(maxDelta, 1e-4,
+                          "mouth-noise-only mode must not limit a loud clean non-artifact signal")
+    }
+
     /// Higher level produces more reduction on a plosive-shaped signal (monotonic).
     func testHigherMouthNoiseLevelReducesMoreOnPlosive() {
         func plosiveRMS(_ level: MouthNoiseLevel) -> Float {
@@ -353,26 +487,101 @@ final class MouthNoiseTests: XCTestCase {
         XCTAssertGreaterThan(plosiveRMS(.medium), plosiveRMS(.high))
     }
 
-    /// Changing mouthNoiseLevel while chain is active resets mouth-noise stages.
+    /// Changing mouthNoiseLevel while the chain stays active must reset the mouth-noise
+    /// stages — verified on the NEXT NON-SILENT sample (a silence-only probe passes even
+    /// with stale state, because silence × a stale `DeClick.gain` is still silence and a
+    /// stale plosive high-pass rings out in microseconds). We drive the chain with a
+    /// click+plosive burst that engages BOTH stages (DeClick.gain → floor, plosive
+    /// envelopes/HP charged), switch level, then feed a steady CLEAN probe and require it
+    /// to equal a freshly-configured chain that never saw the burst. Any leftover
+    /// `DeClick.gain < 1` (un-reset) would attenuate the probe and fail the match.
     func testMouthNoiseLevelChangeResetsStages() {
+        func freshProbeOutput(_ level: MouthNoiseLevel) -> [Float] {
+            let chain = VoiceChain()
+            var s = VoiceChainSettings.disabled
+            s.mouthNoiseLevel = level
+            chain.configure(s)
+            // Clean, steady, non-silent probe (no artifact) — identity at rest under mouth-noise-only.
+            var probe = [Float](repeating: 0, count: 256)
+            for i in 0..<probe.count { probe[i] = 0.2 * sinf(2 * Float.pi * 1000 * Float(i) / 48000) }
+            probe.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+            return probe
+        }
+
         let chain = VoiceChain()
         var s = VoiceChainSettings.disabled
         s.mouthNoiseLevel = .high
         chain.configure(s)
-        // Energize with a loud plosive-shaped burst
+        // Energize BOTH stages: a low-band plosive bias + a hard click transient.
         var burst = [Float](repeating: 0, count: 4800)
         for i in 0..<burst.count {
             burst[i] = 0.9 * sinf(2 * Float.pi * 60 * Float(i) / 48000)
         }
+        burst[2400] = 0.99   // sharp click → drives DeClick.gain toward the floor
         burst.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
-        // Switch level while chain is still active
+
+        // Switch level while still active → must reset DePlosive + DeClick.
         s.mouthNoiseLevel = .low
         chain.configure(s)
-        // Silence in → no stale ringing
-        var quiet = [Float](repeating: 0, count: 128)
-        quiet.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
-        XCTAssertTrue(quiet.allSatisfy { abs($0) < 1e-4 },
-                      "mouth-noise stages must reset on level change — no stale ringing")
+
+        // Probe with a clean steady signal; compare to a chain that never saw the burst.
+        var probe = [Float](repeating: 0, count: 256)
+        for i in 0..<probe.count { probe[i] = 0.2 * sinf(2 * Float.pi * 1000 * Float(i) / 48000) }
+        probe.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+
+        let fresh = freshProbeOutput(.low)
+        var maxDelta: Float = 0
+        for i in 0..<probe.count { maxDelta = max(maxDelta, abs(probe[i] - fresh[i])) }
+        XCTAssertLessThan(maxDelta, 1e-5,
+                          "mouth-noise stages must fully reset on level change — no stale gain/state")
+    }
+
+    /// A simultaneous clarity + mouthNoise level change (while the chain stays active) must
+    /// reset BOTH stage groups, not just one. The level-change reset uses INDEPENDENT `if`
+    /// checks (not `else if`), so a single configure call that changes both clarity and
+    /// mouthNoise resets clarity AND mouth-noise. Probe on the next non-silent sample.
+    func testSimultaneousClarityAndMouthNoiseChangeResetsBoth() {
+        // Reference: a fresh chain configured directly at the target levels.
+        func freshOutput() -> [Float] {
+            let chain = VoiceChain()
+            var s = VoiceChainSettings.disabled
+            s.clarity = .low
+            s.mouthNoiseLevel = .low
+            chain.configure(s)
+            var probe = [Float](repeating: 0, count: 256)
+            for i in 0..<probe.count { probe[i] = 0.2 * sinf(2 * Float.pi * 1000 * Float(i) / 48000) }
+            probe.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+            return probe
+        }
+
+        let chain = VoiceChain()
+        var s = VoiceChainSettings.disabled
+        s.clarity = .high
+        s.mouthNoiseLevel = .high
+        chain.configure(s)
+        // Energize clarity (sibilant burst) AND mouth-noise (plosive + click) stages.
+        var burst = [Float](repeating: 0, count: 4800)
+        for i in 0..<burst.count {
+            burst[i] = 0.9 * sinf(2 * Float.pi * 60 * Float(i) / 48000)
+                     + 0.4 * sinf(2 * Float.pi * 7000 * Float(i) / 48000)
+        }
+        burst[2400] = 0.99
+        burst.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+
+        // Change BOTH levels in one configure call.
+        s.clarity = .low
+        s.mouthNoiseLevel = .low
+        chain.configure(s)
+
+        var probe = [Float](repeating: 0, count: 256)
+        for i in 0..<probe.count { probe[i] = 0.2 * sinf(2 * Float.pi * 1000 * Float(i) / 48000) }
+        probe.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+
+        let fresh = freshOutput()
+        var maxDelta: Float = 0
+        for i in 0..<probe.count { maxDelta = max(maxDelta, abs(probe[i] - fresh[i])) }
+        XCTAssertLessThan(maxDelta, 1e-5,
+                          "simultaneous clarity+mouthNoise change must reset both stage groups")
     }
 
     /// mouthNoise == .off with an enabled (polish-on) preset must be bit-identical
@@ -469,6 +678,10 @@ public struct DePlosive {
     @inline(__always)
     public mutating func process(_ x: Float) -> Float {
         guard enabled else { return x }
+        // EXACTLY ONE filter advance per input sample. `Biquad.process` mutates z1/z2
+        // on every call, so a second "peek" (e.g. `hp.process(0)`) would corrupt the
+        // high-pass state and desync detection from the render output. Detection below
+        // reads ONLY the scalar envelopes — never a second filter call.
         let hiSig = hp.process(x)
         let lowSig = x - hiSig          // low-band component (below splitHz)
 
@@ -481,11 +694,9 @@ public struct DePlosive {
         lowEnv   = lCoeff * lowEnv   + (1 - lCoeff) * lowMag
 
         // Detect plosive: total energy must exceed threshold AND the low band must
-        // dominate (low/(low+high) > lowRatioGuard) to avoid suppressing consonant bursts.
+        // dominate (lowEnv / totalEnv >= lowRatioGuard) to avoid suppressing consonant bursts.
         guard totalEnv > thresholdLin else { return x }
-        let loRatio = lowEnv / (lowEnv + abs(hp.process(0)) + 1e-12) // forward peek without advancing state
-        // Simpler and allocation-free: compute ratio from already-computed envelopes.
-        let ratio = lowEnv / (totalEnv + 1e-12)
+        let ratio = lowEnv / max(totalEnv, 1e-12)   // scalar-only ratio; no extra filter advance
         guard ratio >= lowRatioGuard else { return x }
 
         // Subtractive low-band reduction (same shape as DeEsser.process).
@@ -496,15 +707,24 @@ public struct DePlosive {
 }
 
 /// Broadband transient gate for mouth clicks and lip-smacks. Tracks a fast
-/// instantaneous envelope and a slow background RMS; when the fast/slow ratio
-/// exceeds `clickRatio` AND the fast envelope exceeds `minThreshold`, a brief
-/// gain reduction (`gainFloor`) is applied for `holdReleaseMs` milliseconds.
-/// Below the ratio (and when disabled) `gain = 1.0` exactly — normal speech,
-/// voiced stops, and consonant bursts are untouched.
+/// instantaneous envelope and a slow background RMS. A click is a *few-sample*
+/// spike where the fast envelope rises far above the slow background; a phoneme
+/// onset is a spike that *sustains*. The gate therefore engages only when the
+/// fast/slow ratio is tripped for a SHORT run (≤ `maxClickSamples`); once the
+/// trip-run exceeds that, the transient is treated as voiced content, the gain
+/// snaps back to unity, and the gate latches off until the ratio falls back —
+/// so ordinary voiced onsets and the voiced body pass through unchanged.
+///
+/// The denominator of the ratio test is floored at `minThresholdLin` (a
+/// "warm-up floor"). This stops a not-yet-settled slow envelope (≈0 after
+/// silence) from manufacturing an astronomically large ratio that would
+/// false-trigger on the first voiced onset after a pause.
+///
+/// Below the ratio (and when disabled) `gain = 1.0` exactly.
 public struct DeClick {
     private var enabled = false
     private var clickRatio: Float = 6.0       // fast/slow ratio to flag a click
-    private var minThresholdLin: Float = 0    // absolute floor so quiet rooms don't trigger
+    private var minThresholdLin: Float = 1e-6 // absolute floor: also the warm-up ratio floor
     private var gainFloor: Float = 0.25       // minimum gain during a click event
     private var fastAttackCoeff: Float = 0
     private var fastReleaseCoeff: Float = 0
@@ -513,8 +733,11 @@ public struct DeClick {
     private var holdSamples: Int = 0
     private var holdCounter: Int = 0
     private var holdReleaseCoeff: Float = 0   // gain release after hold expires
+    private var maxClickSamples: Int = 0      // longest trip-run still treated as a click
+    private var tripRun: Int = 0              // consecutive samples the ratio has been tripped
+    private var latched = false               // true = trip-run exceeded; ignore until ratio falls
     private var fastEnv: Float = 0
-    private var slowEnv: Float = 1e-6         // non-zero initial to prevent div-by-zero at first sample
+    private var slowEnv: Float = 0            // starts at 0; warm-up floor guards the ratio
     private var gain: Float = 1.0
 
     public init() {}
@@ -525,7 +748,7 @@ public struct DeClick {
                                    holdReleaseMs: Float, gainFloor: Float,
                                    sampleRate: Float, enabled: Bool) {
         self.enabled = enabled
-        guard enabled else { fastEnv = 0; slowEnv = 1e-6; gain = 1; holdCounter = 0; return }
+        guard enabled else { reset(); return }
         self.clickRatio = max(1, clickRatio)
         self.gainFloor = max(0, min(1, gainFloor))
         minThresholdLin = powf(10, minThresholdDb / 20)
@@ -534,12 +757,15 @@ public struct DeClick {
         slowAttackCoeff  = expf(-1.0 / (max(slowAttackMs,  0.01) * 0.001 * sampleRate))
         slowReleaseCoeff = expf(-1.0 / (max(slowReleaseMs, 0.01) * 0.001 * sampleRate))
         holdSamples = Int(max(holdReleaseMs, 0.01) * 0.001 * sampleRate)
+        // A click is at most ~1 ms of anomalous rise; anything longer is voiced content.
+        maxClickSamples = max(1, Int(0.001 * sampleRate))
         // Release from gainFloor → 1.0 over the same holdReleaseMs window.
         holdReleaseCoeff = expf(-1.0 / (max(holdReleaseMs, 0.01) * 0.001 * sampleRate))
+        fastEnv = 0; slowEnv = 0; gain = 1; holdCounter = 0; tripRun = 0; latched = false
     }
 
     public mutating func reset() {
-        fastEnv = 0; slowEnv = 1e-6; gain = 1; holdCounter = 0
+        fastEnv = 0; slowEnv = 0; gain = 1; holdCounter = 0; tripRun = 0; latched = false
     }
 
     @inline(__always)
@@ -555,12 +781,32 @@ public struct DeClick {
         let sCoeff = mag > slowEnv ? slowAttackCoeff : slowReleaseCoeff
         slowEnv = sCoeff * slowEnv + (1 - sCoeff) * mag
 
-        // Click detection: fast spike relative to slow background.
-        let isClick = fastEnv > clickRatio * slowEnv && fastEnv > minThresholdLin
+        // Ratio test against a FLOORED background (warm-up floor) so a near-zero
+        // slow envelope after silence can't fabricate a huge ratio.
+        let background = max(slowEnv, minThresholdLin)
+        let ratioTripped = fastEnv > clickRatio * background && fastEnv > minThresholdLin
+
+        // Distinguish a few-sample click from a sustained voiced onset by trip-run length.
+        if ratioTripped {
+            tripRun += 1
+            if tripRun > maxClickSamples {
+                // Sustained rise → voiced content, not a click. Snap to unity and latch
+                // off until the ratio falls back below threshold (prevents dulling onsets).
+                latched = true
+            }
+        } else {
+            tripRun = 0
+            latched = false   // transient ended → ready to detect the next genuine click
+        }
+
+        let isClick = ratioTripped && !latched
 
         if isClick {
             gain = gainFloor          // instantaneous attack to floor
             holdCounter = holdSamples // arm the hold
+        } else if latched {
+            gain = 1                  // sustained content: force unity, no coloration
+            holdCounter = 0
         } else if holdCounter > 0 {
             holdCounter -= 1
             // During hold: gain stays at floor (or wherever attack left it).
@@ -727,31 +973,60 @@ The defaulted property keeps the synthesized memberwise initializer backward-com
 
 ### Step 2c: Update `configure(_:)` in `VoiceChain`
 
-- [ ] In `configure(_:)`, update the active gate and the reset conditions:
-
-The `active` gate becomes:
-```swift
-active = s.enabled || s.clarity != .off || s.mouthNoiseLevel != .off
-```
-
-The "clarity changed while active" partial-reset block expands to also reset mouth-noise stages when `mouthNoiseLevel` changes:
+- [ ] Replace the whole `configure(_:)` method. Three precise changes vs. the Broadcast Voice version:
+  1. **Capture `priorMouthNoise` and assign `mouthNoise = s.mouthNoiseLevel` at the TOP** (alongside `clarity`), BEFORE the reset block — otherwise the level-change comparison reads the value it is about to assign and the branch is dead.
+  2. **Independent `if` checks, NOT `else if` chaining** — a single `configure` that changes BOTH clarity and mouthNoise must reset BOTH stage groups, not just the first one matched.
+  3. **Extend the active gate** to include `mouthNoiseLevel`.
 
 ```swift
-        } else if clarity != priorClarity {
-            presence.reset(); deEsser.reset()
-        } else if mouthNoise != priorMouthNoise {
-            dePlosive.reset(); deClick.reset()
-        }
-```
-
-Add the saved prior value:
-```swift
+    public func configure(_ s: VoiceChainSettings) {
+        let wasActive = active
+        let priorClarity = clarity
         let priorMouthNoise = mouthNoise
-```
-
-At the end of `configure`, configure the new stages:
-```swift
+        enabled = s.enabled
+        clarity = s.clarity
         mouthNoise = s.mouthNoiseLevel
+        active = s.enabled || s.clarity != .off || s.mouthNoiseLevel != .off
+        guard active else { return }
+        // Clean start when the chain becomes active (don't inherit frozen state).
+        // Switching between two *active* settings is intentionally bumpless EXCEPT for the
+        // stage group whose level changed — its stale envelope/gain state would ring on
+        // re-enable and color the voice, so reset ONLY that group. Independent `if` checks
+        // (not `else if`) so a simultaneous clarity+mouthNoise change resets BOTH groups.
+        if !wasActive {
+            reset()
+        } else {
+            if clarity != priorClarity { presence.reset(); deEsser.reset() }
+            if mouthNoise != priorMouthNoise { dePlosive.reset(); deClick.reset() }
+        }
+
+        if enabled {
+            hp.setHighPass(freq: s.highPassHz, sampleRate: sampleRate)
+            lowShelf.setLowShelf(freq: s.lowShelfHz, gainDb: s.lowShelfDb, sampleRate: sampleRate)
+            highShelf.setHighShelf(freq: s.highShelfHz, gainDb: s.highShelfDb, sampleRate: sampleRate)
+            comp.configure(thresholdDb: s.compThresholdDb, ratio: s.compRatio,
+                           attackMs: s.compAttackMs, releaseMs: s.compReleaseMs,
+                           makeupDb: s.compMakeupDb, sampleRate: sampleRate)
+        }
+
+        if clarity != .off {
+            presence.setPeaking(freq: ClarityProfile.presenceHz, gainDb: clarity.presenceDb,
+                                sampleRate: sampleRate, q: ClarityProfile.presenceQ)
+            deEsser.configure(crossoverHz: ClarityProfile.deEssCrossoverHz,
+                              thresholdDb: ClarityProfile.deEssThresholdDb,
+                              maxReductionDb: clarity.deEssMaxReductionDb,
+                              attackMs: ClarityProfile.deEssAttackMs,
+                              releaseMs: ClarityProfile.deEssReleaseMs,
+                              sampleRate: sampleRate, enabled: true)
+        } else {
+            presence.setBypass()
+            deEsser.configure(crossoverHz: ClarityProfile.deEssCrossoverHz,
+                              thresholdDb: ClarityProfile.deEssThresholdDb, maxReductionDb: 0,
+                              attackMs: ClarityProfile.deEssAttackMs,
+                              releaseMs: ClarityProfile.deEssReleaseMs,
+                              sampleRate: sampleRate, enabled: false)
+        }
+
         if mouthNoise != .off {
             dePlosive.configure(
                 splitHz: MouthNoiseProfile.plosiveSplitHz,
@@ -781,6 +1056,15 @@ At the end of `configure`, configure the new stages:
                               holdReleaseMs: 4, gainFloor: 1.0,
                               sampleRate: sampleRate, enabled: false)
         }
+
+        // Limiter runs ONLY when a limiter-owning path is active (polish or clarity). The
+        // de-plosive/de-click stages are attenuation-only (they never raise level), so
+        // mouth-noise-only mode needs no limiter — running it would clamp a loud CLEAN
+        // sample above the ceiling purely because the feature is on (an identity violation).
+        if enabled || clarity != .off {
+            limiter.configure(ceilingDb: s.limiterCeilingDb, releaseMs: 50, sampleRate: sampleRate)
+        }
+    }
 ```
 
 ### Step 2d: Update `reset()` in `VoiceChain`
@@ -804,9 +1088,17 @@ At the end of `configure`, configure the new stages:
 HP → lowShelf → highShelf → presence → deEsser → dePlosive → deClick → comp → limiter
 ```
 
-The `process` loop becomes (replace the full function body):
+The `process` loop becomes (replace the doc comment AND the full function body). The
+Broadcast Voice doc comment said "the limiter always runs while active" — now FALSE, since
+mouth-noise-only mode skips the limiter — so replace it too:
 
 ```swift
+    /// Process `count` samples in place. No-op when inactive. Order:
+    /// HP → shelves → presence → de-esser → de-plosive → de-click → compressor → limiter.
+    /// Polish stages run only when `enabled`; clarity stages only when `clarity != .off`;
+    /// mouth-noise stages only when `mouthNoise != .off`. The limiter runs only for a
+    /// limiter-owning path (polish or clarity) — the attenuation-only mouth-noise stages
+    /// never raise level, so mouth-noise-only mode is a true identity at rest for clean input.
     public func process(_ buffer: UnsafeMutablePointer<Float>, count: Int) {
         guard active else { return }
         let doPolish   = enabled
@@ -830,7 +1122,12 @@ The `process` loop becomes (replace the full function body):
             if doPolish {
                 x = comp.process(x)
             }
-            x = limiter.process(x)
+            // Limiter runs ONLY for limiter-owning paths (polish/clarity). De-plosive and
+            // de-click are attenuation-only — they never raise level — so mouth-noise-only
+            // mode must NOT limit (limiting a loud clean sample would break identity at rest).
+            if doPolish || doClarity {
+                x = limiter.process(x)
+            }
             buffer[i] = x
         }
     }
@@ -1198,7 +1495,13 @@ The headless suite cannot exercise the live audio path. After implementation, ve
 
 ## Self-Review (completed during authoring)
 
-- **Spec coverage:** "De-plosive: tame P-pops / low-frequency thumps via a transient-triggered dynamic high-pass / low-band ducking. Identity at rest." → `DePlosive` (Task 1), `MouthNoiseLevel` (Task 2), chain wiring (Task 3), AudioModel (Task 4), UI (Tasks 5–6). "De-click: suppress short mouth clicks / lip-smacks via a short-transient detector + brief targeted attenuation. Identity at rest." → `DeClick` (Task 1), same wiring path. "Identity at rest proven by tests" → `testDePlosiveDisabledIsIdentity`, `testDePlosiveBelowThresholdIsIdentity`, `testDeClickDisabledIsIdentity`, `testDeClickSteadySpeechIsIdentity`. "Only targeted artifact reduced, voice body untouched" → `testDePlosivePreservesMidBandVoice`, `testDeClickReleasesQuickly`. "Off = true no-op" → `testMouthNoiseOffMatchesLegacyChain`.
+- **Spec coverage:** "De-plosive: tame P-pops / low-frequency thumps via a transient-triggered dynamic high-pass / low-band ducking. Identity at rest." → `DePlosive` (Task 1), `MouthNoiseLevel` (Task 2), chain wiring (Task 3), AudioModel (Task 4), UI (Tasks 5–6). "De-click: suppress short mouth clicks / lip-smacks via a short-transient detector + brief targeted attenuation. Identity at rest." → `DeClick` (Task 1), same wiring path. "Identity at rest proven by tests" → `testDePlosiveDisabledIsIdentity`, `testDePlosiveBelowThresholdIsIdentity`, `testDeClickDisabledIsIdentity`, `testDeClickSteadySpeechIsIdentity`. "Only targeted artifact reduced, voice body untouched" → `testDePlosivePreservesMidBandVoice`, `testDeClickVoicedOnsetAfterSilenceIsIdentity`, `testDeClickVoicedBodyUntouched`, `testDeClickReleasesQuickly`. "Off = true no-op" → `testMouthNoiseOffMatchesLegacyChain`, `testMouthNoiseOnlyPreservesLoudCleanSignal`.
+- **Reviewer-finding fixes (this revision):**
+  1. *(State corruption)* `DePlosive.process` now advances its high-pass EXACTLY ONCE per sample — the `hp.process(0)` peek and the dead `loRatio` line are removed; detection reads the scalar envelopes only (`ratio = lowEnv / max(totalEnv, 1e-12)`). Proven by `testDePlosiveAdvancesFilterExactlyOncePerSample` (byte-identical to a single-advance one-pass reference on a gate-triggering signal).
+  2. *(Dead reset predicate)* `VoiceChain.configure` now assigns `mouthNoise = s.mouthNoiseLevel` at the TOP (after capturing `priorMouthNoise`) and uses INDEPENDENT `if` checks (not `else if`) after the inactive→active full reset, so a level change actually fires and a simultaneous clarity+mouthNoise change resets BOTH groups. Proven by `testMouthNoiseLevelChangeResetsStages` (non-silent probe vs. a fresh chain) and `testSimultaneousClarityAndMouthNoiseChangeResetsBoth`.
+  3. *(Identity at rest)* The limiter runs ONLY when `doPolish || doClarity`; mouth-noise-only mode (attenuation-only stages) skips it, so a loud clean sample above the ceiling is untouched. Proven by `testMouthNoiseOnlyPreservesLoudCleanSignal`.
+  4. *(False positives)* `DeClick` uses a warm-up floor on the ratio denominator plus a short-trip-run gate (engages only for `≤ maxClickSamples ≈ 1 ms`, latches off for sustained content) so voiced onsets and the voiced body are not gated. Proven by `testDeClickVoicedOnsetAfterSilenceIsIdentity` and `testDeClickVoicedBodyUntouched`.
+  5. *(Doc consistency)* High de-plosive cap is 20 dB consistently across prose, table, and `MouthNoiseLevel.high.maxPlosReductionDb`.
 - **Placeholder scan:** none — every code step shows complete, copy-pasteable code.
 - **Type consistency:** `MouthNoiseLevel` (with `maxPlosReductionDb`, `clickGainFloor`, `label`, `allCases`, `id`), `MouthNoiseProfile` constants, `DePlosive.configure(splitHz:thresholdDb:lowRatioGuard:maxReductionDb:attackMs:releaseMs:sampleRate:enabled:)`, `DeClick.configure(fastAttackMs:fastReleaseMs:slowAttackMs:slowReleaseMs:clickRatio:minThresholdDb:holdReleaseMs:gainFloor:sampleRate:enabled:)`, `VoiceChainSettings.mouthNoiseLevel`, and `AudioModel.mouthNoiseLevel` are used consistently across all tasks.
 - **Interaction with existing stages:** chain position (de-plosive → de-click after de-esser, before compressor) prevents plosive thumps from pumping the compressor envelope. The de-esser's 6 kHz crossover is above the de-plosive's 120 Hz split — no frequency overlap; stages are independent.
