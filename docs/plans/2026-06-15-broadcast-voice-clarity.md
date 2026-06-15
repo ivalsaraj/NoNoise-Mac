@@ -8,6 +8,8 @@
 
 **Tech Stack:** Swift 5.9, SwiftUI, Swift Package Manager, XCTest, Accelerate (per-sample scalar/biquad math; no CoreML dependency in any new type).
 
+**GitHub Issue:** #1 — https://github.com/ivalsaraj/NoNoise-Mac/issues/1
+
 **Execution location:** All edits and commits go inside `/Users/valsaraj/Downloads/MetalVoice_v1.1/MetalVoice-src/`.
 
 ---
