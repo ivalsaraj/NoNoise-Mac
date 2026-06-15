@@ -5,6 +5,12 @@ for the must-read failure modes.
 
 ---
 
+### [GOTCHA] 2026-06-15 — Input meter must publish the TRIMMED signal, not the pre-trim source RMS (@Valsaraj)
+- **Symptom:** With Input Volume at 43% the input meter still read near max, so the trim looked broken — worst in Tutorial mode, which also double-boosted (`outputGain 1.2` + `compMakeupDb 4`) and leaned on the limiter, sounding crushed.
+- **Root cause:** RMS was computed in the *pre-trim* loop and published into `inputLevel`; the trim (`vDSP_vsmul`) ran afterward, so the meter never reflected what NoNoise actually processes.
+- **Fix/Rule:** Measure raw + trimmed in one allocation-free helper (`SmartLevelController.applyInputVolumeAndMeasure` — raw scan → in-place trim → trimmed scan) and publish `trimmedRMS` as the meter; keep raw peak/clip for the separate source-clip warning. A meter must reflect the signal at the stage it claims to represent. The raw-vs-trimmed contract is a pure helper (`evaluateInputGuard`) so it is unit-tested without constructing `AudioModel`.
+- **Files:** `Sources/Core/AudioModel.swift`, `Sources/Core/AudioProcessing/SmartLevelController.swift`.
+
 ### [DECISION] 2026-06-15 — Incoming/guest cleanup is a SEPARATE engine, not a second AudioModel (@Valsaraj)
 - **Problem:** Cleaning the *other* side of a call (a noisy guest) is the mirror of mic cleaning, so it's tempting to reuse `AudioModel` or its render path.
 - **Decision:** Ship a standalone `IncomingCleanupEngine` that owns its OWN `AVCaptureSession`, `AVAudioEngine`, `RingBuffer`, and `DeepFilterNetDSP`. It must NOT touch the mic path or the NoNoise Mic sink, and it runs DeepFilterNet **only** — no `VoiceChain`/Broadcast Voice (that polish is voice-shaping for the outgoing mic, wrong for arbitrary guest audio). Keeps the two pipelines independently startable and avoids coupling render-thread state.

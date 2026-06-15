@@ -174,7 +174,8 @@ final class SmartLevelControllerTests: XCTestCase {
         XCTAssertFalse(decision.isInputNearCeiling)
         XCTAssertEqual(decision.inputLevel, 0.43, accuracy: 1e-6)
         XCTAssertEqual(decision.consecutiveTrimmedHotTicks, 0)
-        XCTAssertNil(decision.suggestedInputVolume)
+        XCTAssertNil(decision.suggestedInputVolume,
+                     "raw source clipping alone must not force Smart Level lower when trimmed input is safe")
     }
 
     func testInputGuardSuggestsLowerVolumeWhenTrimmedInputIsStillHotAtFortyThreePercent() {
