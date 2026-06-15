@@ -52,3 +52,17 @@ hard rules; the full rationale is in `AGENTS.md`.
   publish timer. Never `lockFocus`/disk-read inside a SwiftUI `body`; cache static images as `static let`.
 - **Why:** `objectWillChange` on an app-wide model fans out to EVERY observer, including the
   always-mounted Scene/label; at 25 Hz that starves the run loop and the failure is silent (perf, not correctness).
+
+## [PATTERN] Transient suppressors gate on a TIME-LOCAL change, never a steady band-ratio
+- **Source:** `docs/knowledge/knowledge1.md`, 2026-06-15 ([CORRECTION]).
+- **Where:** `Sources/Core/AudioProcessing/Dynamics.swift` (`DePlosive`, `DeClick`).
+- **Symptom:** Mouth Noise on → voiced speech muffled on the highs + faint distortion (subtle, easy
+  to misread as the AI denoiser).
+- ❌ **WRONG:** Flag a plosive when `lowEnv/totalEnv ≥ guard` (a steady low/total ratio). Voiced
+  vowels are low-dominant too, so this fires on ~all speech and ducks the low-mids continuously; the
+  subtractive `x − frac·(x − hp(x))` then re-injects a phase-shifted high-passed copy → intermodulation.
+- ✅ **CORRECT:** Gate on a TIME-LOCAL transient — a surge (`fastLow/slowLow`) for the de-plosive and
+  an instant-attack peak vs slow background for the de-click — AND a spectral signature (low-band
+  concentration). Steady voicing has surge ≈ 1, so it never gates. Duck a CLEAN low-pass band, not `x − hp(x)`.
+- **Why:** Voiced speech and these artifacts share frequency bands; only their TIME behavior differs.
+  A steady-state band test cannot separate them and silently degrades every voiced frame.

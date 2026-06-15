@@ -60,10 +60,13 @@ docs, and reviews.
 - **De-esser** — a subtractive split-band sibilance controller
   (`out = x − frac·sib`). Identity at rest; only acts on loud sibilant transients.
 - **Mouth Noise Finishers** — two identity-at-rest DSP stages after the de-esser:
-  - **De-plosive** (`DePlosive`): subtractive low-band gate. `out = x − frac·lowSig`
-    when the low-band ratio and total energy both exceed thresholds. Identity otherwise.
-  - **De-click** (`DeClick`): broadband transient gate. `out = x × gain` where
-    `gain < 1` only during brief (< 5 ms) fast/slow envelope ratio spikes. Identity otherwise.
+  - **De-plosive** (`DePlosive`): subtractive low-band gate driven by a TRANSIENT detector. The
+    clean low-pass band is ducked (`out = x − frac·low`) only when the low band both SURGES
+    (fast/slow rise ≥ `surgeRatio`) AND is spectrally CONCENTRATED (low/(low+high) ≥ `dominance`)
+    above an absolute floor — so steady voiced low-mids pass untouched. Identity otherwise.
+  - **De-click** (`DeClick`): broadband transient gate. An instant-attack PEAK follower vs a slow
+    background; `gain < 1` only for a SHORT event (`peak > clickRatio·slowEnv`). A longer event
+    latches off as voiced content, so onsets and the voiced body pass. Identity otherwise.
   - Controlled by `MouthNoiseLevel` (off/low/medium/high); persisted under `mv.mouthNoise`.
 - **Biquad** — RBJ-cookbook second-order IIR filter (TDF-II).
 - **Compressor** — log-domain feed-forward dynamics (threshold/ratio/attack/release/makeup).

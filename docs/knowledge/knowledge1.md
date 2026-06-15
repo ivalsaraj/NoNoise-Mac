@@ -372,3 +372,27 @@ migration in `VoiceProfileStore.decode(from:)`.
 - **Files**: `Sources/Core/AudioProcessing/Dynamics.swift`,
   `Sources/Core/AudioProcessing/VoiceChain.swift`,
   `Tests/NoNoiseMacTests/MouthNoiseTests.swift`
+
+### [CORRECTION] 2026-06-15 — Mouth-noise finishers must detect TRANSIENTS, not steady low-band energy (@Valsaraj)
+**Supersedes**: docs/knowledge/knowledge1.md, 2026-06-15 — Mouth-noise finishers: subtractive detection preserves voice character
+- **Problem**: With Mouth Noise enabled, voiced speech sounded muffled on the highs with faint
+  distortion. The earlier "dual-threshold" `DePlosive` (total energy AND low/total ratio) is a
+  STEADY-STATE detector: `lowEnv/totalEnv ≥ 0.60` holds for essentially ALL voiced speech (vowels
+  are low-dominant), so it ducked the low band continuously.
+- **Root Cause**: (1) A low/total ratio is NOT a plosive discriminator — sustained voicing is also
+  low-dominant. (2) The subtractive form `out = x − frac·lowSig` with `lowSig = x − hp(x)` re-injects
+  a phase-shifted high-passed copy, so steady firing both dulls the low-mids AND intermodulates the
+  highs. (3) The old `DeClick` ratio (6.0) with an attack/release fast envelope never tripped on
+  real few-sample clicks → inert.
+- **Fix**: Detect the two things that actually distinguish the artifacts from voicing.
+  - De-plosive: a TRANSIENT SURGE (`fastLow/slowLow ≥ surgeRatio`) that is spectrally CONCENTRATED
+    in the low band (`fastLow/(fastLow+fastHigh) ≥ dominance`), above an absolute floor, ducking a
+    CLEAN low-pass band (new `Biquad.setLowPass`) with a smoothed `frac`. Steady voicing → surge ≈ 1
+    → never gates. (`Dynamics.swift` `DePlosive`)
+  - De-click: an instant-attack PEAK follower vs a slow background with a WALL-CLOCK event latch —
+    a click is a short event (fully ducked); a sustained rise latches off within `maxClickMs`. (`DeClick`)
+- **Rule**: A transient-artifact suppressor must gate on a TIME-LOCAL change (surge / peak-vs-background)
+  AND a spectral signature — NEVER on a steady band-ratio, because voiced speech occupies the same
+  bands. Always validate against sustained harmonic-rich voicing AND voiced onsets, not just pure sines.
+- **Files**: `Sources/Core/AudioProcessing/Dynamics.swift`, `Sources/Core/AudioProcessing/Biquad.swift`,
+  `Sources/Core/AudioProcessing/VoiceChain.swift`, `Tests/NoNoiseMacTests/MouthNoiseTests.swift`

@@ -107,134 +107,176 @@ public struct DeEsser {
     }
 }
 
-/// Subtractive low-band de-plosive. Detects P-pop / B-thump transients by
-/// tracking the ratio of low-band energy (< `splitHz`) to total energy, and
-/// subtractively removes a fraction of the low band when both the total energy
-/// and the low-band ratio exceed their respective thresholds:
-///   `out = x - frac·lowSig`
-/// Below threshold (and when disabled) `frac = 0`, so `out = x` exactly —
-/// the mid-range voice body and consonant bursts pass through untouched.
+/// Subtractive low-band de-plosive — a TRANSIENT detector, NOT a steady-state ducker.
+/// A P-pop / B-thump is a brief low-frequency SURGE: low-band energy that (a) rises sharply
+/// above its own recent background AND (b) is spectrally concentrated in the low band. Steady
+/// voiced energy (even a sustained low note) is NOT a plosive and MUST pass untouched. The
+/// previous single-ratio design ducked ANY low-dominant signal, so it attenuated the low-mids
+/// of ordinary voiced speech continuously — the muffled/dull artifact this redesign fixes.
+///
+/// Detection uses TWO clean filters, each advanced EXACTLY ONCE per sample:
+///   • `lp` (low-pass @ `splitHz`) → the low band: both the detection magnitude and the
+///     reduction TARGET. A clean LPF (not `x - hp(x)`) avoids leaking phase-shifted high-band
+///     energy into the "low" signal and biasing the detector.
+///   • `hp` (high-pass @ `splitHz`) → the high band, used only for the concentration gate.
+/// Two gates must BOTH fire (plus an absolute floor so quiet rumble never triggers):
+///   • surge       = fastLow / slowLow              ≥ `surgeRatio`  (a transient rise)
+///   • concentration = fastLow / (fastLow + fastHigh) ≥ `dominance`  (energy is low-band)
+///
+/// When gated, the reduction amount `frac` ramps toward `maxReduction` (fast attack) and
+/// releases toward 0 (slow release); output is `x - frac·low`. Off / below-gate → `frac = 0`
+/// → `out = x` exactly, so the mid voice body, consonant bursts, and steady low notes pass through.
+///
+/// **Carry-state contract (mirrors `DeEsser`/`DeClick`):** `configure(enabled: true)` updates
+/// coefficients ONLY — it never clears runtime detector state (envelopes, `frac`, filter
+/// memory). Only `reset()` and the disabled arm clear it, so an unrelated reconfigure is bumpless.
 public struct DePlosive {
-    // Low-band split: the "low" signal is `x - hp(x)`.
-    private var hp = Biquad()           // high-pass at `splitHz` to isolate lo band
+    private var lp = Biquad()            // clean low band: detection magnitude + reduction target
+    private var hp = Biquad()            // clean high band: concentration gate only
     private var enabled = false
-    private var thresholdLin: Float = 1 // total-energy threshold (linear amplitude)
-    private var lowRatioGuard: Float = 0.60  // lo/(lo+hi) must exceed this to flag plosive
-    private var maxReduction: Float = 0      // max fraction of lowSig to subtract (0…1)
-    private var attackCoeff: Float = 0
-    private var releaseCoeff: Float = 0
-    private var totalEnv: Float = 0     // smoothed |x| total-energy envelope
-    private var lowEnv: Float = 0       // smoothed |lowSig| envelope
+    private var floorLin: Float = 0      // absolute low-band floor to arm detection
+    private var surgeRatio: Float = 2.5  // fastLow/slowLow rise that flags a transient
+    private var dominance: Float = 0.78  // fastLow/(fastLow+fastHigh) concentration gate
+    private var maxReduction: Float = 0  // max fraction of the low band to subtract (0…1)
+    private var fastLow: Float = 0       // fast follower of |low|
+    private var slowLow: Float = 0       // slow follower of |low| (the low-band background)
+    private var fastHigh: Float = 0      // fast follower of |high| (matched TC) for the gate
+    private var frac: Float = 0          // smoothed reduction amount
+
+    private var fastAttackCoeff: Float = 0, fastReleaseCoeff: Float = 0
+    private var slowAttackCoeff: Float = 0, slowReleaseCoeff: Float = 0
+    private var fracAttackCoeff: Float = 0, fracReleaseCoeff: Float = 0
+
+    // Fixed detector time-constants (ms). These shape the surge/concentration analysis and are
+    // NOT user knobs: a ~1 ms fast attack resolves a pop's leading edge; the 100/300 ms slow
+    // follower is the low-band background a transient must rise above.
+    private static let fastAttackMs: Float = 1,   fastReleaseMs: Float = 30
+    private static let slowAttackMs: Float = 100, slowReleaseMs: Float = 300
 
     public init() {}
 
-    public mutating func configure(splitHz: Float, thresholdDb: Float, lowRatioGuard: Float,
-                                   maxReductionDb: Float, attackMs: Float, releaseMs: Float,
+    public mutating func configure(splitHz: Float, surgeRatio: Float, dominance: Float,
+                                   floorDb: Float, maxReductionDb: Float,
+                                   attackMs: Float, releaseMs: Float,
                                    sampleRate: Float, enabled: Bool) {
         self.enabled = enabled
-        guard enabled else { hp.setBypass(); totalEnv = 0; lowEnv = 0; return }
+        guard enabled else {
+            lp.setBypass(); hp.setBypass()
+            fastLow = 0; slowLow = 0; fastHigh = 0; frac = 0
+            return
+        }
+        lp.setLowPass(freq: splitHz, sampleRate: sampleRate, q: 0.707)
         hp.setHighPass(freq: splitHz, sampleRate: sampleRate, q: 0.707)
-        thresholdLin = powf(10, thresholdDb / 20)
-        self.lowRatioGuard = max(0, min(1, lowRatioGuard))
+        self.surgeRatio = max(1, surgeRatio)
+        self.dominance = max(0, min(1, dominance))
+        floorLin = powf(10, floorDb / 20)
         maxReduction = min(1, 1 - powf(10, -abs(maxReductionDb) / 20))
-        attackCoeff  = expf(-1.0 / (max(attackMs,  0.01) * 0.001 * sampleRate))
-        releaseCoeff = expf(-1.0 / (max(releaseMs, 0.01) * 0.001 * sampleRate))
+        fracAttackCoeff  = expf(-1.0 / (max(attackMs,  0.01) * 0.001 * sampleRate))
+        fracReleaseCoeff = expf(-1.0 / (max(releaseMs, 0.01) * 0.001 * sampleRate))
+        fastAttackCoeff  = expf(-1.0 / (DePlosive.fastAttackMs  * 0.001 * sampleRate))
+        fastReleaseCoeff = expf(-1.0 / (DePlosive.fastReleaseMs * 0.001 * sampleRate))
+        slowAttackCoeff  = expf(-1.0 / (DePlosive.slowAttackMs  * 0.001 * sampleRate))
+        slowReleaseCoeff = expf(-1.0 / (DePlosive.slowReleaseMs * 0.001 * sampleRate))
+        // NOTE: runtime detector state is intentionally NOT cleared here (bumpless on unrelated
+        // reconfigures). Clearing happens only in reset() / the disabled arm.
     }
 
-    public mutating func reset() { totalEnv = 0; lowEnv = 0; hp.reset() }
+    public mutating func reset() {
+        fastLow = 0; slowLow = 0; fastHigh = 0; frac = 0
+        lp.reset(); hp.reset()
+    }
 
     @inline(__always)
     public mutating func process(_ x: Float) -> Float {
         guard enabled else { return x }
-        // EXACTLY ONE filter advance per input sample. `Biquad.process` mutates z1/z2
-        // on every call, so a second "peek" (e.g. `hp.process(0)`) would corrupt the
-        // high-pass state and desync detection from the render output. Detection below
-        // reads ONLY the scalar envelopes — never a second filter call.
-        let hiSig = hp.process(x)
-        let lowSig = x - hiSig          // low-band component (below splitHz)
+        // EXACTLY ONE advance per filter per sample (`Biquad.process` mutates z1/z2 on every
+        // call; a stray second call would desync detection from the render output).
+        let low = lp.process(x)
+        let high = hp.process(x)
+        let lowMag = abs(low), highMag = abs(high)
 
-        // Update envelope followers.
-        let totalMag = abs(x)
-        let lowMag   = abs(lowSig)
-        let tCoeff = totalMag > totalEnv ? attackCoeff : releaseCoeff
-        let lCoeff = lowMag   > lowEnv   ? attackCoeff : releaseCoeff
-        totalEnv = tCoeff * totalEnv + (1 - tCoeff) * totalMag
-        lowEnv   = lCoeff * lowEnv   + (1 - lCoeff) * lowMag
+        let fL = lowMag  > fastLow  ? fastAttackCoeff : fastReleaseCoeff
+        let sL = lowMag  > slowLow  ? slowAttackCoeff : slowReleaseCoeff
+        let fH = highMag > fastHigh ? fastAttackCoeff : fastReleaseCoeff
+        fastLow  = fL * fastLow  + (1 - fL) * lowMag
+        slowLow  = sL * slowLow  + (1 - sL) * lowMag
+        fastHigh = fH * fastHigh + (1 - fH) * highMag
 
-        // Detect plosive: total energy must exceed threshold AND the low band must
-        // dominate (lowEnv / totalEnv >= lowRatioGuard) to avoid suppressing consonant bursts.
-        guard totalEnv > thresholdLin else { return x }
-        let ratio = lowEnv / max(totalEnv, 1e-12)   // scalar-only ratio; no extra filter advance
-        guard ratio >= lowRatioGuard else { return x }
+        // Transient (surge) AND low-band concentration gate, above an absolute floor.
+        let surge = fastLow / max(slowLow, 1e-9)
+        let conc  = fastLow / max(fastLow + fastHigh, 1e-9)
+        let gated = fastLow > floorLin && surge >= surgeRatio && conc >= dominance
 
-        // Subtractive low-band reduction (same shape as DeEsser.process).
-        let over = totalEnv / thresholdLin   // > 1
-        let frac = maxReduction * (1 - 1 / over)
-        return x - frac * lowSig
+        // Smooth the reduction amount: fast attack to maxReduction, slow release to 0.
+        let target: Float = gated ? maxReduction : 0
+        let c = target > frac ? fracAttackCoeff : fracReleaseCoeff
+        frac = c * frac + (1 - c) * target
+        if frac < 1e-5 { return x }   // identity when no reduction is active
+        return x - frac * low
     }
 }
 
-/// Broadband transient gate for mouth clicks and lip-smacks. Tracks a fast
-/// instantaneous envelope and a slow background RMS. A click is a *few-sample*
-/// spike where the fast envelope rises far above the slow background; a phoneme
-/// onset is a spike that *sustains*. The gate therefore engages only when the
-/// fast/slow ratio is tripped for a SHORT run (≤ `maxClickSamples`); once the
-/// trip-run exceeds that, the transient is treated as voiced content, the gain
-/// snaps back to unity, and the gate latches off until the ratio falls back —
-/// so ordinary voiced onsets and the voiced body pass through unchanged.
+/// Broadband transient gate for mouth clicks and lip-smacks. A click is an INSTANTANEOUS
+/// peak that towers over the established speech background; a voiced onset or the voiced
+/// body is a level change that SUSTAINS. The gate tracks an instant-attack PEAK follower
+/// against a slow background and ducks only a SHORT event:
+///   • `peak`    — instant attack, fast release (`peakReleaseMs`): catches a 1-sample spike.
+///   • `slowEnv` — the speech background (slow attack/release).
+///   • trip when `peak > clickRatio · slowEnv`.
+/// A wall-clock EVENT LATCH separates clicks from sustained content: a trip starts an event
+/// and refreshes a hold that bridges sub-pitch-period gaps (so a periodic loud passage reads
+/// as ONE event, not a train of clicks). If the event outlasts `maxClickMs` it LATCHES OFF —
+/// the rise is voiced content, gain snaps to unity and stays there until a real quiet gap ends
+/// the event. So even an extreme instantaneous level jump only ducks for ≈`maxClickMs`, while a
+/// genuine click (a shorter event) is fully ducked. Attack to the floor is instantaneous (the
+/// step is masked by the click transient); release is a smooth ramp (`releaseMs`) — no zipper.
 ///
-/// **Identity at rest is non-negotiable: the gate NEVER fires from cold silence,
-/// and re-disarms on any realistic pause.** A click is only meaningful *relative to
-/// an established speech background*. The gate is armed only after the slow background
-/// has stayed above `minThresholdLin` continuously for `warmupSamples` (one slow-release
-/// time-constant). Disarm is driven by an INDEPENDENT instantaneous-silence detector,
-/// NOT by `slowEnv`: because `slowEnv` releases over ~200 ms, a realistic 200–300 ms
-/// pause leaves it still above `minThresholdLin` (so it must NOT gate disarm). Instead a
-/// `silenceCounter` counts consecutive samples whose instantaneous level (`|x|`) is below
-/// the silence floor (`minThresholdLin`); after `silenceSamples` (≈75 ms) the gate
-/// force-disarms (`warmupCounter = 0`). Any above-floor sample resets `silenceCounter`,
-/// so voiced zero-crossings never disarm mid-speech. While unarmed (cold start, or just
-/// after a disarm) `process` returns `x` BIT-EXACTLY (`gain` held at 1.0; no envelope
-/// ratio is even consulted for gating). This makes a voiced onset after silence an exact
-/// identity from sample 0 — both at cold start AND after every realistic pause — instead
-/// of letting a near-zero `slowEnv` fabricate a huge fast/slow ratio that clips the first
-/// ~1 ms of clean speech.
+/// **Identity at rest is non-negotiable: the gate NEVER fires from cold silence, and re-disarms
+/// on any realistic pause.** A click is only meaningful relative to an ESTABLISHED background, so
+/// the gate arms only after the slow background has stayed above `minThresholdLin` continuously for
+/// `warmupSamples` (one slow-release time-constant). Disarm is driven by an INDEPENDENT
+/// instantaneous-silence detector, NOT by `slowEnv`: `slowEnv` releases over ~200 ms, so a realistic
+/// 200–300 ms pause leaves it above the floor (it must NOT gate disarm). A `silenceCounter` counts
+/// consecutive samples whose instantaneous level `|x|` is below the floor; after `silenceSamples`
+/// (≈75 ms) the gate force-disarms (`warmupCounter = 0`). Any above-floor sample resets it, so voiced
+/// zero-crossings never disarm mid-speech. While unarmed, `process` returns `x` BIT-EXACTLY (`gain`
+/// held at 1.0; the ratio is never even consulted), so a voiced onset after silence is exact identity
+/// from sample 0 — at cold start AND after every realistic pause.
 ///
-/// **Documented tradeoff:** a click occurring from *total* silence (no preceding
-/// speech to establish a background) is intentionally MISSED. Per the requirement,
-/// missing a from-silence click is strictly preferable to dulling a clean voiced
-/// onset — the overwhelmingly common case. Clicks during or after speech (the
-/// realistic mouth-noise case) still have an established background and are caught.
+/// **Documented tradeoff:** a click occurring from *total* silence (no preceding speech to establish
+/// a background) is intentionally MISSED — missing a from-silence click is strictly preferable to
+/// dulling a clean voiced onset. Clicks during or after speech (the realistic case) still have an
+/// established background and are caught.
 ///
 /// Below the ratio (and when disabled) `gain = 1.0` exactly.
 ///
 /// **State-carry contract (mirrors `DeEsser`):** `configure(enabled: true)` updates
-/// parameters/coefficients ONLY — it MUST NOT clear the runtime detector state
-/// (`fastEnv`, `slowEnv`, `gain`, `holdCounter`, `tripRun`, `latched`, `warmupCounter`,
-/// `silenceCounter`). Runtime state is cleared ONLY by `reset()` and by the disabled arm. `VoiceChain`
-/// decides when to reset (full reset on inactive→active; mouth-noise-stages reset when
-/// `MouthNoiseLevel` itself changes), so reconfiguring on an UNRELATED setting change
-/// (clarity, voice polish) is bumpless and never cold-restarts the gate.
+/// parameters/coefficients ONLY — it MUST NOT clear the runtime detector state (`peak`, `slowEnv`,
+/// `gain`, `holdCounter`, `eventLen`, `elevatedHold`, `latched`, `warmupCounter`, `silenceCounter`).
+/// Runtime state is cleared ONLY by `reset()` and by the disabled arm. `VoiceChain` decides when to
+/// reset (full reset on inactive→active; mouth-noise stages reset when `MouthNoiseLevel` itself
+/// changes), so reconfiguring on an UNRELATED setting change (clarity, voice polish) is bumpless.
 public struct DeClick {
     private var enabled = false
-    private var clickRatio: Float = 6.0       // fast/slow ratio to flag a click
+    private var clickRatio: Float = 3.0       // peak/slow ratio to flag a click
     private var minThresholdLin: Float = 1e-6 // absolute floor: arms the warm-up + ratio test
-    private var gainFloor: Float = 0.25       // minimum gain during a click event
-    private var fastAttackCoeff: Float = 0
-    private var fastReleaseCoeff: Float = 0
+    private var gainFloor: Float = 0.25       // gain during a click event
+    private var peakReleaseCoeff: Float = 0   // peak follower release (attack is instantaneous)
     private var slowAttackCoeff: Float = 0
     private var slowReleaseCoeff: Float = 0
+    private var releaseCoeff: Float = 0       // gain release ramp back to unity
     private var holdSamples: Int = 0
     private var holdCounter: Int = 0
-    private var holdReleaseCoeff: Float = 0   // gain release after hold expires
-    private var maxClickSamples: Int = 0      // longest trip-run still treated as a click
+    private var maxClickSamples: Int = 0      // longest event still treated as a click
+    private var eventResetSamples: Int = 0    // quiet gap that ends a transient event
     private var warmupSamples: Int = 0        // background must be established this long before arming
     private var warmupCounter: Int = 0        // consecutive samples slowEnv has been above the floor
     private var silenceSamples: Int = 0       // consecutive instantaneous-silence samples that force a disarm (≈75 ms)
     private var silenceCounter: Int = 0       // consecutive samples |x| has stayed below the silence floor
-    private var tripRun: Int = 0              // consecutive samples the ratio has been tripped
-    private var latched = false               // true = trip-run exceeded; ignore until ratio falls
-    private var fastEnv: Float = 0
+    private var eventLen: Int = 0             // wall-clock samples the current event has lasted
+    private var elevatedHold: Int = 0         // bridges sub-pitch-period gaps within one event
+    private var latched = false               // true = event outlasted maxClick; pass as voiced
+    private var peak: Float = 0               // instant-attack peak follower
     private var slowEnv: Float = 0            // starts at 0; gate stays disarmed until background established
     private var gain: Float = 1.0
 
@@ -242,28 +284,32 @@ public struct DeClick {
     // only against an ESTABLISHED background, and a realistic pause is ≥ 200 ms — 75 ms re-arms
     // cold well inside that window while staying immune to per-cycle voiced zero-crossings.
     private static let silenceDisarmMs: Float = 75
+    // Quiet gap (ms) that ends a transient event. Must exceed one pitch period of the lowest voiced
+    // pitch (~80 Hz → 12.5 ms) so a periodic loud passage reads as ONE sustained event (and latches
+    // off) instead of a train of clicks.
+    private static let eventBridgeMs: Float = 12
 
     public init() {}
 
     /// Update parameters/coefficients. Mirrors `DeEsser.configure`: the `enabled`
     /// arm does NOT touch runtime state — only `reset()` and the disabled arm clear it.
-    public mutating func configure(fastAttackMs: Float, fastReleaseMs: Float,
-                                   slowAttackMs: Float, slowReleaseMs: Float,
+    public mutating func configure(peakReleaseMs: Float, slowAttackMs: Float, slowReleaseMs: Float,
                                    clickRatio: Float, minThresholdDb: Float,
-                                   holdReleaseMs: Float, gainFloor: Float,
-                                   sampleRate: Float, enabled: Bool) {
+                                   holdMs: Float, releaseMs: Float, maxClickMs: Float,
+                                   gainFloor: Float, sampleRate: Float, enabled: Bool) {
         self.enabled = enabled
         guard enabled else { reset(); return }
         self.clickRatio = max(1, clickRatio)
         self.gainFloor = max(0, min(1, gainFloor))
         minThresholdLin = powf(10, minThresholdDb / 20)
-        fastAttackCoeff  = expf(-1.0 / (max(fastAttackMs,  0.01) * 0.001 * sampleRate))
-        fastReleaseCoeff = expf(-1.0 / (max(fastReleaseMs, 0.01) * 0.001 * sampleRate))
+        peakReleaseCoeff = expf(-1.0 / (max(peakReleaseMs, 0.01) * 0.001 * sampleRate))
         slowAttackCoeff  = expf(-1.0 / (max(slowAttackMs,  0.01) * 0.001 * sampleRate))
         slowReleaseCoeff = expf(-1.0 / (max(slowReleaseMs, 0.01) * 0.001 * sampleRate))
-        holdSamples = Int(max(holdReleaseMs, 0.01) * 0.001 * sampleRate)
-        // A click is at most ~1 ms of anomalous rise; anything longer is voiced content.
-        maxClickSamples = max(1, Int(0.001 * sampleRate))
+        releaseCoeff     = expf(-1.0 / (max(releaseMs,     0.01) * 0.001 * sampleRate))
+        holdSamples = Int(max(holdMs, 0) * 0.001 * sampleRate)
+        // A click is a short event; anything longer is voiced content (latched off).
+        maxClickSamples = max(1, Int(max(maxClickMs, 0.01) * 0.001 * sampleRate))
+        eventResetSamples = max(1, Int(DeClick.eventBridgeMs * 0.001 * sampleRate))
         // Require one slow-release time-constant of established background before arming
         // the gate. From cold silence the gate stays disarmed → voiced onset is exact identity.
         warmupSamples = max(1, Int(max(slowReleaseMs, 0.01) * 0.001 * sampleRate))
@@ -273,15 +319,14 @@ public struct DeClick {
         // continuous instantaneous silence is short enough to re-arm cold after a realistic
         // 200–300 ms pause, yet long enough that voiced zero-crossings never trip it mid-speech.
         silenceSamples = max(1, Int(DeClick.silenceDisarmMs * 0.001 * sampleRate))
-        // Release from gainFloor → 1.0 over the same holdReleaseMs window.
-        holdReleaseCoeff = expf(-1.0 / (max(holdReleaseMs, 0.01) * 0.001 * sampleRate))
         // NOTE: runtime detector state is intentionally NOT cleared here (bumpless on
         // unrelated reconfigures). Clearing happens only in reset() / the disabled arm.
     }
 
     public mutating func reset() {
-        fastEnv = 0; slowEnv = 0; gain = 1
-        holdCounter = 0; tripRun = 0; warmupCounter = 0; silenceCounter = 0; latched = false
+        peak = 0; slowEnv = 0; gain = 1
+        holdCounter = 0; eventLen = 0; elevatedHold = 0
+        warmupCounter = 0; silenceCounter = 0; latched = false
     }
 
     @inline(__always)
@@ -289,9 +334,8 @@ public struct DeClick {
         guard enabled else { return x }
         let mag = abs(x)
 
-        // Fast envelope: tracks instantaneous amplitude.
-        let fCoeff = mag > fastEnv ? fastAttackCoeff : fastReleaseCoeff
-        fastEnv = fCoeff * fastEnv + (1 - fCoeff) * mag
+        // Peak follower: INSTANT attack (catches a 1-sample click), exponential release.
+        peak = mag > peak ? mag : peakReleaseCoeff * peak
 
         // Slow envelope: tracks the speech background.
         let sCoeff = mag > slowEnv ? slowAttackCoeff : slowReleaseCoeff
@@ -324,40 +368,41 @@ public struct DeClick {
         // silence), the gate cannot fire. Force gain to exactly 1.0 and return x bit-for-bit.
         guard armed else {
             gain = 1
-            holdCounter = 0; tripRun = 0; latched = false
+            holdCounter = 0; eventLen = 0; elevatedHold = 0; latched = false
             return x
         }
 
-        // Ratio test against the established background.
-        let ratioTripped = fastEnv > clickRatio * slowEnv && fastEnv > minThresholdLin
+        // Ratio test: an instantaneous peak towering over the established background.
+        let tripped = peak > clickRatio * slowEnv && peak > minThresholdLin
 
-        // Distinguish a few-sample click from a sustained voiced onset by trip-run length.
-        if ratioTripped {
-            tripRun += 1
-            if tripRun > maxClickSamples {
-                // Sustained rise → voiced content, not a click. Snap to unity and latch
-                // off until the ratio falls back below threshold (prevents dulling onsets).
-                latched = true
-            }
+        // Wall-clock event latch: a trip starts/refreshes an event whose hold bridges
+        // sub-pitch-period gaps. The event length is measured in wall-clock samples, so a
+        // sustained loud passage (periodic transients) latches off within maxClickMs regardless
+        // of its duty cycle, while an isolated click (event shorter than maxClickMs) is fully ducked.
+        if tripped { elevatedHold = eventResetSamples }
+        if elevatedHold > 0 {
+            elevatedHold -= 1
+            eventLen += 1
+            if eventLen > maxClickSamples { latched = true }
         } else {
-            tripRun = 0
-            latched = false   // transient ended → ready to detect the next genuine click
+            eventLen = 0
+            latched = false   // event ended → ready to detect the next genuine click
         }
 
-        let isClick = ratioTripped && !latched
+        let isClick = tripped && !latched
 
         if isClick {
-            gain = gainFloor          // instantaneous attack to floor
+            gain = gainFloor          // instant attack to floor — the step is masked by the click
             holdCounter = holdSamples // arm the hold
         } else if latched {
             gain = 1                  // sustained content: force unity, no coloration
             holdCounter = 0
         } else if holdCounter > 0 {
             holdCounter -= 1
-            // During hold: gain stays at floor (or wherever attack left it).
+            // During hold: gain stays at floor.
         } else {
-            // Release back to unity.
-            gain = holdReleaseCoeff * gain + (1 - holdReleaseCoeff) * 1.0
+            // Smooth release back to unity (no zipper).
+            gain = releaseCoeff * gain + (1 - releaseCoeff) * 1.0
         }
 
         return x * gain

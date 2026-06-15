@@ -101,21 +101,24 @@ public enum MouthNoiseLevel: String, CaseIterable, Identifiable, Codable, Sendab
 /// All values chosen conservatively — they target artifacts that are distinctly sharper or
 /// more low-heavy than any voiced phoneme.
 enum MouthNoiseProfile {
-    // De-plosive
-    static let plosiveSplitHz: Float   = 120    // low/high split frequency
-    static let plosiveThresholdDb: Float = -42  // total-energy floor to arm detection
-    static let plosiveLowRatioGuard: Float = 0.60  // low/(total) ratio gate
-    static let plosiveAttackMs: Float  = 0.3
-    static let plosiveReleaseMs: Float = 25
+    // De-plosive — transient low-band surge detector (validated against sustained vowels,
+    // vowel onsets, hum and 40–60 Hz P-pops: 0% fire on voiced content).
+    static let plosiveSplitHz: Float    = 120    // low/high split frequency
+    static let plosiveSurgeRatio: Float = 2.5    // low-band fast/slow rise that flags a transient
+    static let plosiveDominance: Float  = 0.78   // low/(low+high) concentration gate
+    static let plosiveFloorDb: Float    = -50    // absolute low-band floor to arm detection
+    static let plosiveAttackMs: Float   = 2.0    // reduction engage
+    static let plosiveReleaseMs: Float  = 40.0   // reduction release
 
-    // De-click
-    static let clickFastAttackMs: Float  = 0.05
-    static let clickFastReleaseMs: Float = 2.0
-    static let clickSlowAttackMs: Float  = 50.0
+    // De-click — instant-attack peak follower vs slow background, wall-clock event latch.
+    static let clickPeakReleaseMs: Float = 1.5
+    static let clickSlowAttackMs: Float  = 10.0
     static let clickSlowReleaseMs: Float = 200.0
-    static let clickRatio: Float         = 6.0  // fast/slow ratio to flag a click
+    static let clickRatio: Float         = 3.0   // peak/slow ratio to flag a click
     static let clickMinThresholdDb: Float = -54  // absolute floor (quiet rooms don't trigger)
-    static let clickHoldReleaseMs: Float = 4.0  // how long to hold + release gain
+    static let clickHoldMs: Float        = 1.5   // hold at floor after a click
+    static let clickReleaseMs: Float     = 5.0   // smooth gain release back to unity
+    static let clickMaxClickMs: Float    = 2.0   // events longer than this latch off as voiced
 }
 
 public struct VoiceChainSettings: Sendable, Equatable {
@@ -226,31 +229,41 @@ public final class VoiceChain {
         if mouthNoise != .off {
             dePlosive.configure(
                 splitHz: MouthNoiseProfile.plosiveSplitHz,
-                thresholdDb: MouthNoiseProfile.plosiveThresholdDb,
-                lowRatioGuard: MouthNoiseProfile.plosiveLowRatioGuard,
+                surgeRatio: MouthNoiseProfile.plosiveSurgeRatio,
+                dominance: MouthNoiseProfile.plosiveDominance,
+                floorDb: MouthNoiseProfile.plosiveFloorDb,
                 maxReductionDb: mouthNoise.maxPlosReductionDb,
                 attackMs: MouthNoiseProfile.plosiveAttackMs,
                 releaseMs: MouthNoiseProfile.plosiveReleaseMs,
                 sampleRate: sampleRate, enabled: true)
             deClick.configure(
-                fastAttackMs: MouthNoiseProfile.clickFastAttackMs,
-                fastReleaseMs: MouthNoiseProfile.clickFastReleaseMs,
+                peakReleaseMs: MouthNoiseProfile.clickPeakReleaseMs,
                 slowAttackMs: MouthNoiseProfile.clickSlowAttackMs,
                 slowReleaseMs: MouthNoiseProfile.clickSlowReleaseMs,
                 clickRatio: MouthNoiseProfile.clickRatio,
                 minThresholdDb: MouthNoiseProfile.clickMinThresholdDb,
-                holdReleaseMs: MouthNoiseProfile.clickHoldReleaseMs,
+                holdMs: MouthNoiseProfile.clickHoldMs,
+                releaseMs: MouthNoiseProfile.clickReleaseMs,
+                maxClickMs: MouthNoiseProfile.clickMaxClickMs,
                 gainFloor: mouthNoise.clickGainFloor,
                 sampleRate: sampleRate, enabled: true)
         } else {
             dePlosive.configure(splitHz: MouthNoiseProfile.plosiveSplitHz,
-                                thresholdDb: -42, lowRatioGuard: 0.60,
-                                maxReductionDb: 0, attackMs: 0.3, releaseMs: 25,
+                                surgeRatio: MouthNoiseProfile.plosiveSurgeRatio,
+                                dominance: MouthNoiseProfile.plosiveDominance,
+                                floorDb: MouthNoiseProfile.plosiveFloorDb,
+                                maxReductionDb: 0, attackMs: MouthNoiseProfile.plosiveAttackMs,
+                                releaseMs: MouthNoiseProfile.plosiveReleaseMs,
                                 sampleRate: sampleRate, enabled: false)
-            deClick.configure(fastAttackMs: 0.05, fastReleaseMs: 2, slowAttackMs: 50,
-                              slowReleaseMs: 200, clickRatio: 6.0, minThresholdDb: -54,
-                              holdReleaseMs: 4, gainFloor: 1.0,
-                              sampleRate: sampleRate, enabled: false)
+            deClick.configure(peakReleaseMs: MouthNoiseProfile.clickPeakReleaseMs,
+                              slowAttackMs: MouthNoiseProfile.clickSlowAttackMs,
+                              slowReleaseMs: MouthNoiseProfile.clickSlowReleaseMs,
+                              clickRatio: MouthNoiseProfile.clickRatio,
+                              minThresholdDb: MouthNoiseProfile.clickMinThresholdDb,
+                              holdMs: MouthNoiseProfile.clickHoldMs,
+                              releaseMs: MouthNoiseProfile.clickReleaseMs,
+                              maxClickMs: MouthNoiseProfile.clickMaxClickMs,
+                              gainFloor: 1.0, sampleRate: sampleRate, enabled: false)
         }
 
         // Limiter runs ONLY when a limiter-owning path is active (polish, clarity, or

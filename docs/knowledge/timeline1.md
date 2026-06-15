@@ -2,6 +2,31 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Mouth-noise finishers redesigned: transient de-plosive + peak-follower de-click (Valsaraj)
+- **Symptom (user report):** turning Mouth Noise on muffled the highs and added faint distortion.
+- **Root cause:** the old `DePlosive` was a STEADY-STATE detector — it ducked the low band whenever
+  `lowEnv/totalEnv ≥ 0.60` and `totalEnv > −42 dB`, which holds for ~all voiced speech (vowels are
+  low-dominant). It attenuated voiced low-mids continuously and re-injected a phase-shifted
+  high-passed copy (`out = (1−frac)·x + frac·hp(x)`), causing intermodulation dullness. The old
+  `DeClick` (attack/release fast envelope, ratio 6) was effectively inert on real few-sample clicks.
+- **Fix (`Sources/Core/AudioProcessing/Dynamics.swift`):**
+  - `DePlosive` → TRANSIENT detector: clean low-pass band (new `Biquad.setLowPass`) gated by BOTH a
+    surge (`fastLow/slowLow ≥ 2.5`) AND a concentration test (`fastLow/(fastLow+fastHigh) ≥ 0.78`)
+    above a −50 dB floor; reduction amount smoothed (2 ms attack / 40 ms release). Validated: 0%
+    fire on sustained vowels, vowel onsets and 60 Hz hum; 2–4 dB knockdown on 40–60 Hz P-pops.
+  - `DeClick` → instant-attack PEAK follower vs slow background (10 ms attack), `clickRatio 3.0`,
+    with a WALL-CLOCK event latch (`maxClickMs 2.0`, 12 ms gap bridge) so a sustained loud passage
+    latches off within ~2 ms while isolated clicks are fully ducked (−12 dB). Smooth 5 ms release
+    (no zipper). Preserved: identity-at-rest arming, 75 ms instantaneous-silence disarm, carry-state.
+- **Wiring:** `MouthNoiseProfile` constants + both `VoiceChain.configure` call sites updated to the
+  new signatures; `MouthNoiseLevel` reduction/floor ladders unchanged.
+- **Tests:** `Tests/NoNoiseMacTests/MouthNoiseTests.swift` rewritten with realistic signals
+  (harmonic vowels, vowel onsets, damped P-pops, high-crest voicing, loud level jumps). `swift test`
+  224 green; `swift build` + `swift build -c release --arch arm64` clean.
+- `Sources/Core/AudioProcessing/Biquad.swift`, `Sources/Core/AudioProcessing/Dynamics.swift`,
+  `Sources/Core/AudioProcessing/VoiceChain.swift`, `Tests/NoNoiseMacTests/MouthNoiseTests.swift`,
+  `CONCEPTS.md`, `AGENTS.md`, `docs/knowledge/knowledge1.md`, `docs/knowledge/critical-patterns.md`.
+
 ### 2026-06-15 — Input Volume default lowered to 80%
 - Changed fresh installs and Settings reset to use `SmartLevelController.defaultInputVolume = 0.8`
   instead of 1.0, so hot mics get a little headroom by default while existing saved `mv.inputVolume`

@@ -36,6 +36,21 @@ public struct Biquad {
         a2 = (1 - alpha) / a0
     }
 
+    /// RBJ low-pass. Used by `DePlosive` to derive a CLEAN low-band signal (both the
+    /// reduction target and the low-band detection magnitude) — unlike `x - hp(x)`, which
+    /// leaks phase-shifted high-band energy into the "low" band and biases the detector.
+    public mutating func setLowPass(freq: Float, sampleRate: Float, q: Float = 0.707) {
+        let w0 = 2 * Float.pi * max(freq, 1) / sampleRate
+        let cs = cosf(w0), sn = sinf(w0)
+        let alpha = sn / (2 * q)
+        let a0 = 1 + alpha
+        b0 = (1 - cs) / 2 / a0
+        b1 = (1 - cs) / a0
+        b2 = (1 - cs) / 2 / a0
+        a1 = (-2 * cs) / a0
+        a2 = (1 - alpha) / a0
+    }
+
     public mutating func setLowShelf(freq: Float, gainDb: Float, sampleRate: Float) {
         setShelf(freq: freq, gainDb: gainDb, sampleRate: sampleRate, low: true)
     }
