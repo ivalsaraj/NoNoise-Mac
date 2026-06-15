@@ -30,7 +30,7 @@ This plan satisfies it structurally, not by taste alone:
 
 1. **De-plosive — identity at rest.** The plosive detector watches the ratio of low-band energy to total energy (`low / total`). During normal voiced phonemes this ratio stays within a broad normal range — only a plosive transient drives it anomalously high while simultaneously above a total-energy threshold. Below threshold, `gain = 1.0` exactly — no subtraction, no filter insertion, no coloration. The gain taper (attack 0.3 ms, release 25 ms) is fast enough to catch the pop and short enough to release before the following vowel is colored.
 
-2. **De-click — identity at rest.** The click detector watches instantaneous broadband energy relative to a slow background RMS *floored at the absolute minimum threshold* (a warm-up floor, so a not-yet-settled background after silence can't fabricate a huge ratio). A mouth click appears as a sudden, SHORT spike `> clickRatio × max(background, floor)`. Crucially, the gate only attenuates while the spike is brief (`≤ maxClickSamples ≈ 1 ms`); a spike that *sustains* (a voiced phoneme onset) makes the gate latch off (`gain = 1.0`) until the ratio falls — so first syllables are never dulled. Outside a genuine click, `gain = 1.0` exactly. The hold time (≤ 5 ms) ensures even a consonant burst that triggers the detector recovers before affecting the following vowel.
+2. **De-click — identity at rest (exact, from sample 0).** The click detector watches instantaneous broadband energy relative to a slow background RMS. **The gate never fires from cold silence:** it is armed only after the slow background has been established (above the minimum threshold) continuously for one slow-release time-constant (`warmupSamples` ≈ 200 ms); a return to silence resets the arming. Until armed, `process` returns the input **bit-for-bit** (`gain` forced to 1.0, ratio test not consulted) — so a voiced onset after silence is an EXACT identity from the very first sample, not merely a ratio-clamped near-identity. Once armed, a mouth click appears as a sudden, SHORT spike `> clickRatio × slowEnv`. The gate only attenuates while the spike is brief (`≤ maxClickSamples ≈ 1 ms`); a spike that *sustains* (a voiced phoneme onset) makes the gate latch off (`gain = 1.0`) until the ratio falls — so first syllables are never dulled. Outside a genuine click, `gain = 1.0` exactly. The hold time (≤ 5 ms) ensures even a consonant burst that triggers the detector recovers before affecting the following vowel. **Accepted tradeoff:** a click occurring from total silence (no established background) is missed — preferable to dulling clean speech, per the requirement.
 
 3. **Conservative, capped gain reduction even at High** (de-plosive: up to 20 dB; de-click: up to 12 dB) to never destroy the transient character of voiced stops (B, D, G) that are NOT pops.
 
@@ -73,11 +73,14 @@ A mouth click is a very short broadband transient — sharp rise in ALL frequenc
 
 1. A **fast envelope** tracking `|x|` with attack 0.05 ms, release 2 ms (near-instantaneous).
 2. A **slow background RMS** tracking `|x|` with attack 50 ms, release 200 ms (tracks the speech body, not transients).
-3. **Ratio test**: `fastEnv > clickRatio × max(slowEnv, minClickThreshold) && fastEnv > minClickThreshold`. Flooring the background at `minClickThreshold` (the "warm-up floor") stops a not-yet-settled slow envelope (≈0 after silence) from fabricating a huge ratio that false-triggers on the first voiced onset after a pause.
-4. **Click vs. onset by duration**: a click is a *few-sample* spike; a voiced onset is a spike that *sustains*. The gate counts consecutive tripped samples (`tripRun`). It only attenuates while `tripRun ≤ maxClickSamples` (~1 ms). Once `tripRun` exceeds that, the rise is voiced content — the gate **latches off** (snaps `gain` to 1.0) until the ratio falls back, so ordinary phoneme attacks and the voiced body are never dulled.
-5. When a click fires: set `gain` toward `gainFloor` (instantaneous attack); after the hold, `gain` releases back to 1.0 over `holdReleaseMs` (3–5 ms). Apply: `out = x × gain`.
+3. **Established-background arming (the identity-at-rest guard).** A click is only meaningful *relative to an established speech background*. The gate is **armed** only after the slow background has stayed above `minClickThreshold` continuously for `warmupSamples` (one slow-release time-constant, ≈200 ms). A `warmupCounter` increments while `slowEnv > minClickThreshold` and resets to 0 the instant the input returns to silence. **Until the gate is armed, `process` returns `x` BIT-EXACTLY** (gain forced to 1.0; the ratio test is not even consulted). This is what makes a voiced onset after silence an *exact* identity from sample 0 — there is no near-zero `slowEnv` to fabricate a huge ratio, because the gate is simply not armed yet.
+4. **Ratio test (only once armed)**: `fastEnv > clickRatio × slowEnv && fastEnv > minClickThreshold`. No "warm-up floor" division trick is needed anymore — the arming guard replaces it, and is stronger (it yields true identity, not merely a clamped ratio).
+5. **Click vs. onset by duration**: a click is a *few-sample* spike; a voiced onset is a spike that *sustains*. The gate counts consecutive tripped samples (`tripRun`). It only attenuates while `tripRun ≤ maxClickSamples` (~1 ms). Once `tripRun` exceeds that, the rise is voiced content — the gate **latches off** (snaps `gain` to 1.0) until the ratio falls back, so ordinary phoneme attacks and the voiced body are never dulled.
+6. When a click fires: set `gain` toward `gainFloor` (instantaneous attack); after the hold, `gain` releases back to 1.0 over `holdReleaseMs` (3–5 ms). Apply: `out = x × gain`.
 
-Identity at rest: when the ratio is not tripped (or it is tripped but latched as voiced content), `gain = 1.0`, `out = x` exactly. `slowEnv` starts at 0 (not a tiny epsilon) because the warm-up floor — not the initial value — guards the ratio against div-by-near-zero.
+Identity at rest: before the gate is armed (cold start / after any return to silence) `gain = 1.0` and `out = x` **bit-for-bit**; once armed, when the ratio is not tripped (or it is tripped but latched as voiced content) `gain = 1.0`, `out = x` exactly. `slowEnv` starts at 0; the arming counter — not a floored ratio — guards against div-by-near-zero, and the slow envelope never participates in gating until a background is genuinely established.
+
+**Documented tradeoff (accepted, per the requirement).** Because the gate never arms from cold silence, a click that occurs from *total* silence — with no preceding speech to establish a background — is intentionally **missed**. This is strictly preferable to dulling a clean voiced onset, which is the overwhelmingly common case and a hard "identity at rest" violation. Clicks that occur *during or after* speech (the realistic mouth-noise scenario) still have an established background and are caught.
 
 ### Level → DSP mapping (the whole feature in one table)
 
@@ -331,12 +334,13 @@ final class MouthNoiseTests: XCTestCase {
                              "de-click gain must recover to near-unity within 20 ms after spike")
     }
 
-    /// REGRESSION (false positive): a normal VOICED ONSET after silence must NOT be
-    /// gated as a click. With a naive `slowEnv ≈ 0` init and a pure ratio test, the
-    /// first speech samples after a pause look like a huge fast/slow spike and get
-    /// attenuated — dulling first syllables. The warm-up floor + short-trip-run gate
-    /// must leave the onset essentially intact (only a sub-millisecond transient may
-    /// be touched, so the energy of the onset region is preserved).
+    /// IDENTITY AT REST (non-negotiable): a normal VOICED ONSET after silence must be
+    /// EXACT identity — `out == in` for EVERY sample, with NO samples skipped. The gate
+    /// must never arm from cold silence (no established background), so it cannot touch
+    /// even the first sample of clean speech. A previous design skipped the first ~1 ms
+    /// and only checked an RMS ratio > 0.97, which permitted attenuating the onset's first
+    /// millisecond — a real identity violation. This asserts bit-level identity from
+    /// sample 0 across the full onset.
     func testDeClickVoicedOnsetAfterSilenceIsIdentity() {
         var d = DeClick()
         d.configure(fastAttackMs: 0.05, fastReleaseMs: 2, slowAttackMs: 50,
@@ -346,18 +350,13 @@ final class MouthNoiseTests: XCTestCase {
         // 200 ms of digital silence (slow background settles to ~0, like a real pause).
         for _ in 0..<9600 { _ = d.process(0) }
         // A voiced onset: a 200 Hz tone at speech level starting cold after the silence.
-        // Measure energy preserved over the first 50 ms of the onset (excluding only the
-        // first ~1 ms where a sub-millisecond transient gate may briefly act).
-        let onset = 2400, skip = 48   // skip ≈ 1 ms (the max click window)
-        var inSq: Float = 0, outSq: Float = 0
-        for i in 0..<onset {
+        // Every sample of the first 50 ms must be untouched — NO skipped samples.
+        for i in 0..<2400 {
             let x = 0.3 * sinf(2 * Float.pi * 200 * Float(i) / 48000)
             let y = d.process(x)
-            if i >= skip { inSq += x * x; outSq += y * y }
+            XCTAssertEqual(y, x, accuracy: 1e-6,
+                           "voiced onset after silence must be exact identity @\(i)")
         }
-        // After the first millisecond the onset must pass essentially unattenuated.
-        XCTAssertGreaterThan(sqrtf(outSq) / sqrtf(inSq), 0.97,
-                             "voiced onset after silence must not be gated as a click")
     }
 
     /// REGRESSION (false positive): the steady VOICED BODY (sustained loud speech)
@@ -534,6 +533,59 @@ final class MouthNoiseTests: XCTestCase {
         for i in 0..<probe.count { maxDelta = max(maxDelta, abs(probe[i] - fresh[i])) }
         XCTAssertLessThan(maxDelta, 1e-5,
                           "mouth-noise stages must fully reset on level change — no stale gain/state")
+    }
+
+    /// REGRESSION (bumpless carry-state contract): reconfiguring on an UNRELATED setting
+    /// change (here, `clarity`) while `mouthNoiseLevel` stays the SAME must NOT cold-reset
+    /// the mouth-noise detector state. `VoiceChain.configure` only calls `deClick.reset()` /
+    /// `dePlosive.reset()` when `mouthNoiseLevel` itself changes; and `DeClick.configure(enabled:
+    /// true)` (mirroring `DeEsser`) updates coefficients only — it must not clear runtime state.
+    /// We energize the de-click (drive its gain below unity near the end of a burst), then
+    /// reconfigure with the SAME mouthNoise but a CHANGED clarity, and require the next probe
+    /// to DIFFER from a freshly-cold chain. If either layer wrongly cleared state, the carried
+    /// chain would equal the cold chain (a cold-restart of mouth-noise on an unrelated change).
+    func testUnrelatedConfigChangeDoesNotResetMouthNoise() {
+        // Reference: a chain that has NEVER seen the burst (cold mouth-noise state),
+        // configured at the post-change settings (clarity .low, mouthNoise .high).
+        func coldChain() -> [Float] {
+            let chain = VoiceChain()
+            var s = VoiceChainSettings.disabled
+            s.clarity = .low
+            s.mouthNoiseLevel = .high
+            chain.configure(s)
+            var probe = [Float](repeating: 0, count: 256)
+            for i in 0..<probe.count { probe[i] = 0.2 * sinf(2 * Float.pi * 1000 * Float(i) / 48000) }
+            probe.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+            return probe
+        }
+
+        let chain = VoiceChain()
+        var s = VoiceChainSettings.disabled
+        s.clarity = .off            // clarity starts OFF
+        s.mouthNoiseLevel = .high
+        chain.configure(s)
+        // Establish a background, then a hard click near the END so the de-click gain is
+        // still below unity (mid hold/release) when the burst finishes.
+        var burst = [Float](repeating: 0, count: 12000)   // 250 ms ≥ warmup → gate armed
+        for i in 0..<burst.count { burst[i] = 0.3 * sinf(2 * Float.pi * 200 * Float(i) / 48000) }
+        burst[11990] = 0.99   // sharp click at the very end → gain driven toward the floor
+        burst.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+
+        // Change ONLY clarity (.off → .low); mouthNoise stays .high → mouth-noise must NOT reset.
+        s.clarity = .low
+        chain.configure(s)
+
+        // Probe: a clean steady signal. The CARRIED de-click (armed, gain mid-release, slowEnv
+        // charged) shapes the first samples differently than a cold chain would.
+        var probe = [Float](repeating: 0, count: 256)
+        for i in 0..<probe.count { probe[i] = 0.2 * sinf(2 * Float.pi * 1000 * Float(i) / 48000) }
+        probe.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+
+        let cold = coldChain()
+        var maxDelta: Float = 0
+        for i in 0..<probe.count { maxDelta = max(maxDelta, abs(probe[i] - cold[i])) }
+        XCTAssertGreaterThan(maxDelta, 1e-4,
+                             "unrelated config change must NOT cold-reset mouth-noise state (state must carry)")
     }
 
     /// A simultaneous clarity + mouthNoise level change (while the chain stays active) must
@@ -715,16 +767,35 @@ public struct DePlosive {
 /// snaps back to unity, and the gate latches off until the ratio falls back —
 /// so ordinary voiced onsets and the voiced body pass through unchanged.
 ///
-/// The denominator of the ratio test is floored at `minThresholdLin` (a
-/// "warm-up floor"). This stops a not-yet-settled slow envelope (≈0 after
-/// silence) from manufacturing an astronomically large ratio that would
-/// false-trigger on the first voiced onset after a pause.
+/// **Identity at rest is non-negotiable: the gate NEVER fires from cold silence.**
+/// A click is only meaningful *relative to an established speech background*. The
+/// gate is armed only after the slow background has stayed above `minThresholdLin`
+/// continuously for `warmupSamples` (one slow-release time-constant). Until then
+/// — and immediately after any return to silence (which resets the warm-up) —
+/// `process` returns `x` BIT-EXACTLY (`gain` is held at 1.0; no envelope ratio is
+/// even consulted for gating). This is what makes a voiced onset after silence an
+/// exact identity from sample 0, instead of letting a near-zero `slowEnv` fabricate
+/// a huge fast/slow ratio that clips the first ~1 ms of clean speech.
+///
+/// **Documented tradeoff:** a click occurring from *total* silence (no preceding
+/// speech to establish a background) is intentionally MISSED. Per the requirement,
+/// missing a from-silence click is strictly preferable to dulling a clean voiced
+/// onset — the overwhelmingly common case. Clicks during or after speech (the
+/// realistic mouth-noise case) still have an established background and are caught.
 ///
 /// Below the ratio (and when disabled) `gain = 1.0` exactly.
+///
+/// **State-carry contract (mirrors `DeEsser`):** `configure(enabled: true)` updates
+/// parameters/coefficients ONLY — it MUST NOT clear the runtime detector state
+/// (`fastEnv`, `slowEnv`, `gain`, `holdCounter`, `tripRun`, `latched`, `warmupCounter`).
+/// Runtime state is cleared ONLY by `reset()` and by the disabled arm. `VoiceChain`
+/// decides when to reset (full reset on inactive→active; mouth-noise-stages reset when
+/// `MouthNoiseLevel` itself changes), so reconfiguring on an UNRELATED setting change
+/// (clarity, voice polish) is bumpless and never cold-restarts the gate.
 public struct DeClick {
     private var enabled = false
     private var clickRatio: Float = 6.0       // fast/slow ratio to flag a click
-    private var minThresholdLin: Float = 1e-6 // absolute floor: also the warm-up ratio floor
+    private var minThresholdLin: Float = 1e-6 // absolute floor: arms the warm-up + ratio test
     private var gainFloor: Float = 0.25       // minimum gain during a click event
     private var fastAttackCoeff: Float = 0
     private var fastReleaseCoeff: Float = 0
@@ -734,14 +805,18 @@ public struct DeClick {
     private var holdCounter: Int = 0
     private var holdReleaseCoeff: Float = 0   // gain release after hold expires
     private var maxClickSamples: Int = 0      // longest trip-run still treated as a click
+    private var warmupSamples: Int = 0        // background must be established this long before arming
+    private var warmupCounter: Int = 0        // consecutive samples slowEnv has been above the floor
     private var tripRun: Int = 0              // consecutive samples the ratio has been tripped
     private var latched = false               // true = trip-run exceeded; ignore until ratio falls
     private var fastEnv: Float = 0
-    private var slowEnv: Float = 0            // starts at 0; warm-up floor guards the ratio
+    private var slowEnv: Float = 0            // starts at 0; gate stays disarmed until background established
     private var gain: Float = 1.0
 
     public init() {}
 
+    /// Update parameters/coefficients. Mirrors `DeEsser.configure`: the `enabled`
+    /// arm does NOT touch runtime state — only `reset()` and the disabled arm clear it.
     public mutating func configure(fastAttackMs: Float, fastReleaseMs: Float,
                                    slowAttackMs: Float, slowReleaseMs: Float,
                                    clickRatio: Float, minThresholdDb: Float,
@@ -759,13 +834,18 @@ public struct DeClick {
         holdSamples = Int(max(holdReleaseMs, 0.01) * 0.001 * sampleRate)
         // A click is at most ~1 ms of anomalous rise; anything longer is voiced content.
         maxClickSamples = max(1, Int(0.001 * sampleRate))
+        // Require one slow-release time-constant of established background before arming
+        // the gate. From cold silence the gate stays disarmed → voiced onset is exact identity.
+        warmupSamples = max(1, Int(max(slowReleaseMs, 0.01) * 0.001 * sampleRate))
         // Release from gainFloor → 1.0 over the same holdReleaseMs window.
         holdReleaseCoeff = expf(-1.0 / (max(holdReleaseMs, 0.01) * 0.001 * sampleRate))
-        fastEnv = 0; slowEnv = 0; gain = 1; holdCounter = 0; tripRun = 0; latched = false
+        // NOTE: runtime detector state is intentionally NOT cleared here (bumpless on
+        // unrelated reconfigures). Clearing happens only in reset() / the disabled arm.
     }
 
     public mutating func reset() {
-        fastEnv = 0; slowEnv = 0; gain = 1; holdCounter = 0; tripRun = 0; latched = false
+        fastEnv = 0; slowEnv = 0; gain = 1
+        holdCounter = 0; tripRun = 0; warmupCounter = 0; latched = false
     }
 
     @inline(__always)
@@ -781,10 +861,27 @@ public struct DeClick {
         let sCoeff = mag > slowEnv ? slowAttackCoeff : slowReleaseCoeff
         slowEnv = sCoeff * slowEnv + (1 - sCoeff) * mag
 
-        // Ratio test against a FLOORED background (warm-up floor) so a near-zero
-        // slow envelope after silence can't fabricate a huge ratio.
-        let background = max(slowEnv, minThresholdLin)
-        let ratioTripped = fastEnv > clickRatio * background && fastEnv > minThresholdLin
+        // Warm-up: a click is only meaningful relative to an ESTABLISHED background.
+        // Count continuous samples the slow background has been above the floor; reset
+        // to 0 the instant it drops back to silence. The gate is armed only once the
+        // background has been established for `warmupSamples`.
+        if slowEnv > minThresholdLin {
+            if warmupCounter < warmupSamples { warmupCounter += 1 }
+        } else {
+            warmupCounter = 0
+        }
+        let armed = warmupCounter >= warmupSamples
+
+        // IDENTITY AT REST: until a background is established (e.g. a voiced onset after
+        // silence), the gate cannot fire. Force gain to exactly 1.0 and return x bit-for-bit.
+        guard armed else {
+            gain = 1
+            holdCounter = 0; tripRun = 0; latched = false
+            return x
+        }
+
+        // Ratio test against the established background.
+        let ratioTripped = fastEnv > clickRatio * slowEnv && fastEnv > minThresholdLin
 
         // Distinguish a few-sample click from a sustained voiced onset by trip-run length.
         if ratioTripped {
@@ -1495,13 +1592,16 @@ The headless suite cannot exercise the live audio path. After implementation, ve
 
 ## Self-Review (completed during authoring)
 
-- **Spec coverage:** "De-plosive: tame P-pops / low-frequency thumps via a transient-triggered dynamic high-pass / low-band ducking. Identity at rest." → `DePlosive` (Task 1), `MouthNoiseLevel` (Task 2), chain wiring (Task 3), AudioModel (Task 4), UI (Tasks 5–6). "De-click: suppress short mouth clicks / lip-smacks via a short-transient detector + brief targeted attenuation. Identity at rest." → `DeClick` (Task 1), same wiring path. "Identity at rest proven by tests" → `testDePlosiveDisabledIsIdentity`, `testDePlosiveBelowThresholdIsIdentity`, `testDeClickDisabledIsIdentity`, `testDeClickSteadySpeechIsIdentity`. "Only targeted artifact reduced, voice body untouched" → `testDePlosivePreservesMidBandVoice`, `testDeClickVoicedOnsetAfterSilenceIsIdentity`, `testDeClickVoicedBodyUntouched`, `testDeClickReleasesQuickly`. "Off = true no-op" → `testMouthNoiseOffMatchesLegacyChain`, `testMouthNoiseOnlyPreservesLoudCleanSignal`.
-- **Reviewer-finding fixes (this revision):**
+- **Spec coverage:** "De-plosive: tame P-pops / low-frequency thumps via a transient-triggered dynamic high-pass / low-band ducking. Identity at rest." → `DePlosive` (Task 1), `MouthNoiseLevel` (Task 2), chain wiring (Task 3), AudioModel (Task 4), UI (Tasks 5–6). "De-click: suppress short mouth clicks / lip-smacks via a short-transient detector + brief targeted attenuation. Identity at rest." → `DeClick` (Task 1), same wiring path. "Identity at rest proven by tests" → `testDePlosiveDisabledIsIdentity`, `testDePlosiveBelowThresholdIsIdentity`, `testDeClickDisabledIsIdentity`, `testDeClickSteadySpeechIsIdentity`. "Only targeted artifact reduced, voice body untouched" → `testDePlosivePreservesMidBandVoice`, `testDeClickVoicedBodyUntouched`, `testDeClickReleasesQuickly`. "Identity at rest is non-negotiable (exact, from sample 0)" → `testDeClickVoicedOnsetAfterSilenceIsIdentity` (bit-level, NO skipped samples). "Bumpless carry-state across unrelated reconfigures" → `testUnrelatedConfigChangeDoesNotResetMouthNoise`. "Off = true no-op" → `testMouthNoiseOffMatchesLegacyChain`, `testMouthNoiseOnlyPreservesLoudCleanSignal`.
+- **Reviewer-finding fixes (round 2):**
   1. *(State corruption)* `DePlosive.process` now advances its high-pass EXACTLY ONCE per sample — the `hp.process(0)` peek and the dead `loRatio` line are removed; detection reads the scalar envelopes only (`ratio = lowEnv / max(totalEnv, 1e-12)`). Proven by `testDePlosiveAdvancesFilterExactlyOncePerSample` (byte-identical to a single-advance one-pass reference on a gate-triggering signal).
   2. *(Dead reset predicate)* `VoiceChain.configure` now assigns `mouthNoise = s.mouthNoiseLevel` at the TOP (after capturing `priorMouthNoise`) and uses INDEPENDENT `if` checks (not `else if`) after the inactive→active full reset, so a level change actually fires and a simultaneous clarity+mouthNoise change resets BOTH groups. Proven by `testMouthNoiseLevelChangeResetsStages` (non-silent probe vs. a fresh chain) and `testSimultaneousClarityAndMouthNoiseChangeResetsBoth`.
   3. *(Identity at rest)* The limiter runs ONLY when `doPolish || doClarity`; mouth-noise-only mode (attenuation-only stages) skips it, so a loud clean sample above the ceiling is untouched. Proven by `testMouthNoiseOnlyPreservesLoudCleanSignal`.
-  4. *(False positives)* `DeClick` uses a warm-up floor on the ratio denominator plus a short-trip-run gate (engages only for `≤ maxClickSamples ≈ 1 ms`, latches off for sustained content) so voiced onsets and the voiced body are not gated. Proven by `testDeClickVoicedOnsetAfterSilenceIsIdentity` and `testDeClickVoicedBodyUntouched`.
+  4. *(False positives)* `DeClick` distinguishes a few-sample click from a sustained voiced onset via a short-trip-run gate (engages only for `≤ maxClickSamples ≈ 1 ms`, latches off for sustained content) so the voiced body is not gated. Proven by `testDeClickVoicedBodyUntouched`. *(Superseded for the from-silence onset case by round-3 fix #2.)*
   5. *(Doc consistency)* High de-plosive cap is 20 dB consistently across prose, table, and `MouthNoiseLevel.high.maxPlosReductionDb`.
+- **Reviewer-finding fixes (round 3):**
+  1. *(Bumpless carry-state regression)* `DeClick.configure(enabled: true)` no longer clears runtime detector state on every call — it now mirrors `DeEsser` exactly: the `enabled` arm updates parameters/coefficients ONLY; runtime state (`fastEnv`, `slowEnv`, `gain`, `holdCounter`, `tripRun`, `latched`, `warmupCounter`) is cleared ONLY in `reset()` and the disabled arm. `VoiceChain.configure` already decides when to reset (full reset on inactive→active; `dePlosive.reset()`/`deClick.reset()` only when `mouthNoiseLevel` changes), so reconfiguring on an UNRELATED change (clarity, voice-polish toggle) is bumpless and never cold-restarts the gate. (`DePlosive.configure` already followed this pattern — only its disabled arm zeroes envelopes — so it needed no change.) Proven by the new `testUnrelatedConfigChangeDoesNotResetMouthNoise` (energize de-click, change ONLY clarity with mouthNoise unchanged, assert carried state DIFFERS from a cold chain), with `testMouthNoiseLevelChangeResetsStages` still proving the intended reset WHEN `mouthNoiseLevel` itself changes.
+  2. *(True identity at rest, not RMS-approximate)* `DeClick` no longer permits attenuating the first ~1 ms of a voiced onset after silence. The gate is now ARMED only after the slow background has been established (above `minThresholdLin`) continuously for `warmupSamples` (≈ one slow-release time-constant); a return to silence resets the arming counter. Until armed, `process` returns `x` BIT-FOR-BIT (gain forced to exactly 1.0; ratio test not consulted). The old "warm-up floor on the ratio denominator" is removed in favor of this stronger arming guard. `testDeClickVoicedOnsetAfterSilenceIsIdentity` is rewritten to assert EXACT per-sample identity (`out == in` within 1e-6, NO skipped samples) across the full onset. **Accepted tradeoff (per the brief):** a click occurring from total silence (no established background) is intentionally missed — preferable to dulling clean speech. `testDeClickReducesShortSpike` still passes: it settles a background before the spike, so the gate is armed and a mid/after-speech click is still caught.
 - **Placeholder scan:** none — every code step shows complete, copy-pasteable code.
 - **Type consistency:** `MouthNoiseLevel` (with `maxPlosReductionDb`, `clickGainFloor`, `label`, `allCases`, `id`), `MouthNoiseProfile` constants, `DePlosive.configure(splitHz:thresholdDb:lowRatioGuard:maxReductionDb:attackMs:releaseMs:sampleRate:enabled:)`, `DeClick.configure(fastAttackMs:fastReleaseMs:slowAttackMs:slowReleaseMs:clickRatio:minThresholdDb:holdReleaseMs:gainFloor:sampleRate:enabled:)`, `VoiceChainSettings.mouthNoiseLevel`, and `AudioModel.mouthNoiseLevel` are used consistently across all tasks.
 - **Interaction with existing stages:** chain position (de-plosive → de-click after de-esser, before compressor) prevents plosive thumps from pumping the compressor envelope. The de-esser's 6 kHz crossover is above the de-plosive's 120 Hz split — no frequency overlap; stages are independent.
