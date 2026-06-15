@@ -43,6 +43,8 @@ App. The Core target stays free of `Carbon` / `AppKit`-specific imports and full
 **Tech Stack:** Swift 5.9, SwiftUI, Carbon (`RegisterEventHotKey`), AppKit (`NSApp`,
 `NSApplicationDelegate`), Swift Package Manager, XCTest.
 
+**GitHub Issue:** #5 — https://github.com/ivalsaraj/NoNoise-Mac/issues/5
+
 **Execution location:** All commands run from the package root — the directory that contains
 `Package.swift`. All paths are repo-relative.
 
