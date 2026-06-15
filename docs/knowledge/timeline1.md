@@ -6,6 +6,8 @@ Chronological log of notable changes. Newest on top.
 - Added a compact **Report** action to the menu-bar popover footer and a matching
   **Report a feature or issue** link in Settings. Both open the NoNoise Mac GitHub issue template
   chooser through a shared app support URL constant.
+- Arranged the popover device rows horizontally, with each label beside its picker/status and the
+  Output route on the next row.
 
 ### 2026-06-15 — Input Volume & Smart Level shipped
 - Added app-level **Input Volume** (25%…100%, default 100%, `mv.inputVolume`) applied pre-ring-buffer

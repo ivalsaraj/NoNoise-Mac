@@ -151,17 +151,20 @@ struct ContentView: View {
 
     private var devicesCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
                 cardLabel("Input", systemImage: "mic.fill")
+                    .frame(width: 74, alignment: .leading)
                 Picker("", selection: $audioModel.selectedInputDeviceID) {
                     ForEach(audioModel.inputDevices, id: \.uniqueID) { device in
                         Text(device.localizedName).tag(device.uniqueID)
                     }
                 }
                 .labelsHidden()
+                .frame(maxWidth: .infinity)
             }
-            VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
                 cardLabel("Output", systemImage: "speaker.wave.2.fill")
+                    .frame(width: 74, alignment: .leading)
                 if audioModel.driverInstalled {
                     // Output is auto-routed to the hidden "NoNoise Mic Engine", which is intentionally
                     // absent from outputDevices — so a picker here would render empty. Show the routing
@@ -170,6 +173,7 @@ struct ContentView: View {
                         Image(systemName: "wand.and.stars").font(.caption2).foregroundColor(.secondary)
                         Text("Automatic → NoNoise Mic").font(.caption).foregroundColor(.secondary)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     Picker("", selection: $audioModel.selectedOutputDeviceID) {
                         ForEach(audioModel.outputDevices) { device in
@@ -177,6 +181,7 @@ struct ContentView: View {
                         }
                     }
                     .labelsHidden()
+                    .frame(maxWidth: .infinity)
                 }
             }
         }
