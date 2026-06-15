@@ -108,7 +108,7 @@ sudo ./install-driver.sh   # install to /Library/Audio/Plug-Ins/HAL, restart cor
 
 Installing restarts `coreaudiod`, so **all** audio drops for ~3 s. Then:
 
-1. **Launch** NoNoise Mac — the **waveform icon** appears in your menu bar.
+1. **Launch** NoNoise Mac — the **NoNoise logo** appears in your menu bar.
 2. **Input** — set **Input Device** to your real microphone (Built-in, USB, etc.). Output is
    **automatic**: the app routes cleaned audio to the hidden "NoNoise Mic Engine" and the popover
    shows **Output: Automatic → NoNoise Mic** (the Output **picker** only appears for the BlackHole
@@ -129,7 +129,7 @@ Installing restarts `coreaudiod`, so **all** audio drops for ~3 s. Then:
 If you can't install the driver (e.g. a managed Mac), NoNoise Mac also works with a
 **[BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole)** virtual cable:
 
-1. **Launch** — find the **waveform icon** in your menu bar.
+1. **Launch** — find the **NoNoise logo** in your menu bar.
 2. **Input** — set **Input Device** to your real microphone (Built-in, USB, etc.).
 3. **Output** — set **Output Device** to **BlackHole 2ch** (the virtual cable).
 4. **Point your apps at the cable** — in Discord / Zoom / OBS, set the **Microphone** to

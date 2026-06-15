@@ -45,19 +45,13 @@ struct ContentView: View {
     }
 
     private var logo: some View {
-        Group {
-            if let path = Bundle.main.path(forResource: "NoNoiseMacLogo", ofType: "png"),
-               let nsImage = NSImage(contentsOfFile: path) {
-                Image(nsImage: nsImage).resizable()
-            } else {
-                Image(systemName: "waveform.circle.fill")
-                    .resizable()
-                    .foregroundColor(.accentColor)
-            }
-        }
-        .aspectRatio(contentMode: .fit)
+        NoNoiseLogoMark()
+            .padding(5)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            )
         .frame(width: 38, height: 38)
-        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
     // MARK: - Status / master toggle (hero)
@@ -70,9 +64,8 @@ struct ContentView: View {
                     Circle()
                         .fill(on ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.12))
                         .frame(width: 42, height: 42)
-                    Image(systemName: on ? "waveform.circle.fill" : "waveform.slash")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(on ? .accentColor : .secondary)
+                    NoNoiseLogoMark(isActive: on)
+                        .frame(width: 26, height: 26)
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Noise Cancellation")

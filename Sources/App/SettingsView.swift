@@ -54,19 +54,13 @@ struct GeneralSettingsView: View {
     }
 
     private var logo: some View {
-        Group {
-            if let path = Bundle.main.path(forResource: "NoNoiseMacLogo", ofType: "png"),
-               let nsImage = NSImage(contentsOfFile: path) {
-                Image(nsImage: nsImage).resizable()
-            } else {
-                Image(systemName: "waveform.circle.fill")
-                    .resizable()
-                    .foregroundColor(.accentColor)
-            }
-        }
-        .aspectRatio(contentMode: .fit)
+        NoNoiseLogoMark()
+            .padding(5)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+            )
         .frame(width: 40, height: 40)
-        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
     // MARK: Suppression

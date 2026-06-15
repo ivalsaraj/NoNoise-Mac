@@ -14,8 +14,8 @@ struct NoNoiseMacApp: App {
         MenuBarExtra {
             ContentView(audioModel: audioModel)
         } label: {
-            let icon = audioModel.isAIEnabled ? "waveform.circle.fill" : "waveform"
-            Image(systemName: icon)
+            NoNoiseLogoMark(isActive: audioModel.isAIEnabled, isTemplate: true)
+                .frame(width: 18, height: 18)
         }
         .menuBarExtraStyle(.window) // Allows complex SwiftUI view in menu
     }

@@ -2,6 +2,12 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — NoNoise logo in menu bar and popover
+- Replaced the SF Symbol waveform used in the menu-bar item and popover status card with a shared
+  SwiftUI `NoNoiseLogoMark`, so the visible app identity matches the NoNoise logo. The menu-bar
+  variant is template-colored for macOS dark/light status bars; the popover/settings variants keep
+  the green/orange brand colors.
+
 ### 2026-06-15 — CI Swift 5.10 compatibility + tag-gated release workflow
 - Gated unused `MLShapedArray<Float16>` convenience APIs in the generated CoreML wrapper behind
   `#if compiler(>=6.0)` so GitHub Actions' macos-14 / Swift 5.10 runner can compile the project.
