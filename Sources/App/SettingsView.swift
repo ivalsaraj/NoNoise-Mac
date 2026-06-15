@@ -232,6 +232,10 @@ struct GeneralSettingsView: View {
                 .font(.caption2)
                 .foregroundColor(.secondary)
             Spacer()
+            Link(destination: SupportLinks.reportIssueOrFeature) {
+                Label("Report a feature or issue", systemImage: "exclamationmark.bubble")
+            }
+            .controlSize(.small)
         }
         .padding(.top, 2)
     }

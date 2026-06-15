@@ -219,6 +219,11 @@ struct ContentView: View {
             }
             .controlSize(.small)
 
+            Link(destination: SupportLinks.reportIssueOrFeature) {
+                Label("Report", systemImage: "exclamationmark.bubble")
+            }
+            .controlSize(.small)
+
             Spacer()
 
             if let error = audioModel.errorMessage {
