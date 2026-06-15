@@ -30,8 +30,10 @@ These appear in BOTH the driver (C) and the app (Swift). Define once per languag
 | `sourceMode` values | `0` = loopback (A1 default), `1` = xpc (A2) |
 | Sample rate | `48000.0` |
 | Channels | `2` (stereo) |
-| Format | Float32, packed, non-interleaved-per-stream per CoreAudio convention |
+| Format | Float32, **interleaved**, packed — ONE stream, 2ch. ASBD = `kAudioFormatFlagIsFloat \| kAudioFormatFlagIsPacked` (NOT `…IsNonInterleaved`), `mChannelsPerFrame=2`, `mFramesPerPacket=1`, `mBytesPerFrame=mBytesPerPacket=8` |
 | HAL install dir | `/Library/Audio/Plug-Ins/HAL` |
+
+> **Canonical buffer layout (one layout, every layer — CRITICAL).** The device stream, the driver's `ioMainBuffer`, `nn_ring`, and the A2 shm ring ALL carry **interleaved** stereo Float32 (`[L0,R0,L1,R1,…]`). `nn_ring` is created with `channels=2`; the driver passes `ioMainBuffer` straight into it (no de/interleave step); the app's `AVAudioEngine` upmixes mono→stereo into this same interleaved frame (parity with today's BlackHole‑2ch path). Any layer that diverges produces wrong‑channel or corrupt audio — there is exactly one layout, asserted by a host test (Task 2) and a distinct‑L/R‑tone manual check (Task 11).
 
 ---
 
@@ -166,10 +168,24 @@ static void test_init_rejects_non_pow2(void) {
     CHECK(nn_ring_init(&r, store, 0, 1) == -1, "zero capacity must be rejected");
 }
 
+// CRITICAL (layout): stereo is interleaved [L,R,L,R…]; L/R must never swap, even across a wrap.
+static void test_stereo_channels_preserved(void) {
+    float store[4 * 2]; nn_ring r;                 // capacity 4 frames, 2ch
+    nn_ring_init(&r, store, 4, 2);
+    nn_ring_clear(&r);
+    float in[3 * 2], out[3 * 2];
+    for (int f = 0; f < 3; f++) { in[f*2] = 100.0f + f; in[f*2 + 1] = 200.0f + f; } // L=10x, R=20x
+    nn_ring_write_at(&r, 3, in, 3);                // start t=3 → slots 3,0,1 (wraps)
+    nn_ring_read_at(&r, 3, out, 3);
+    CHECK(memcmp(in, out, sizeof in) == 0, "interleaved L/R survives a wrap without swapping");
+    CHECK(out[0] == 100.0f && out[1] == 200.0f, "frame 0 stays L-then-R (not swapped)");
+}
+
 int main(void) {
     test_write_read_roundtrip();
     test_wraparound();
     test_init_rejects_non_pow2();
+    test_stereo_channels_preserved();
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("nn_ring: all tests passed\n");
     return 0;
@@ -182,12 +198,13 @@ int main(void) {
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
+rm -f /tmp/nn_ring_test
 clang -std=c11 -Wall -Wextra -O2 test_nn_ring.c ../NoNoiseMic/nn_ring.c -o /tmp/nn_ring_test
-clang -std=c11 -Wall -Wextra -O2 test_nn_clock.c ../NoNoiseMic/nn_clock.c -o /tmp/nn_clock_test 2>/dev/null || true
 /tmp/nn_ring_test
-[ -x /tmp/nn_clock_test ] && /tmp/nn_clock_test || true
 ```
 Make executable: `chmod +x Driver/tests/run-tests.sh`.
+
+> Ring-only for now — `nn_clock` does not exist yet. **Task 3 rewrites this runner to compile AND run both tests strictly (no `|| true`)**, so CI fails if either helper fails to compile or any test fails. Never let a test silently skip.
 
 **Step 4: Run the test — verify it FAILS to compile/link (no `nn_ring.c` yet)**
 
@@ -319,6 +336,17 @@ int main(void) {
     nn_clock_get_zero_timestamp(&c, 1000 + (uint64_t)(periodTicks * 1.0), &st, &ht);
     CHECK(st >= prev, "zero-timestamp must be monotonic (never regress)");
 
+    // Large host-time jump (wake-from-sleep / debugger pause): MUST resolve in O(1), not loop
+    // once per missed period. 2 hours @ 48k = 345,600,000 frames.
+    nn_clock c2;
+    nn_clock_init(&c2, /*anchor*/0, /*ticks/s*/1e9, /*sr*/48000.0, /*period*/512);
+    uint64_t st2 = 0, ht2 = 0;
+    double twoHoursTicks = 2.0 * 3600.0 * 1e9;
+    uint32_t adv = nn_clock_get_zero_timestamp(&c2, (uint64_t)twoHoursTicks, &st2, &ht2);
+    uint64_t expectedPeriods = (uint64_t)(twoHoursTicks / ((512.0 / 48000.0) * 1e9));
+    CHECK(st2 == expectedPeriods * 512, "huge host-time jump lands on the exact boundary");
+    CHECK(adv == (uint32_t)expectedPeriods, "advance count = periods skipped (computed, not looped)");
+
     if (failures) { printf("%d failure(s)\n", failures); return 1; }
     printf("nn_clock: all tests passed\n");
     return 0;
@@ -341,27 +369,41 @@ void nn_clock_init(nn_clock *c, uint64_t anchorHostTime, double hostTicksPerSeco
     c->sampleTime = 0;
 }
 
+// O(1): compute the latest period boundary at/below `currentHostTime` DIRECTLY. Never loop
+// once per missed period — a sleep/debugger/scheduling gap must not spin inside the HAL
+// timing path. Monotonic: sampleTime never regresses.
 uint32_t nn_clock_get_zero_timestamp(nn_clock *c, uint64_t currentHostTime,
                                      uint64_t *outSampleTime, uint64_t *outHostTime) {
-    double periodTicks = ((double)c->periodFrames / c->sampleRate) * c->hostTicksPerSecond;
-    uint32_t advanced = 0;
-    // Advance whole periods while the next boundary's host time is <= now. Monotonic.
-    for (;;) {
-        uint64_t nextSample = c->sampleTime + c->periodFrames;
-        double nextHostOffset = ((double)nextSample / c->sampleRate) * c->hostTicksPerSecond;
-        uint64_t nextHost = c->anchorHostTime + (uint64_t)nextHostOffset;
-        if (nextHost <= currentHostTime) { c->sampleTime = nextSample; advanced++; }
-        else break;
+    const double periodTicks = ((double)c->periodFrames / c->sampleRate) * c->hostTicksPerSecond;
+    uint64_t newSample = c->sampleTime;
+    if (currentHostTime > c->anchorHostTime && periodTicks > 0.0) {
+        double elapsed = (double)(currentHostTime - c->anchorHostTime);
+        uint64_t periodIndex = (uint64_t)(elapsed / periodTicks);   // floor → boundary at/below now
+        newSample = periodIndex * (uint64_t)c->periodFrames;
     }
+    if (newSample < c->sampleTime) newSample = c->sampleTime;        // monotonic clamp
+    uint32_t advanced = (uint32_t)((newSample - c->sampleTime) / c->periodFrames);
+    c->sampleTime = newSample;
     double curHostOffset = ((double)c->sampleTime / c->sampleRate) * c->hostTicksPerSecond;
     *outSampleTime = c->sampleTime;
     *outHostTime = c->anchorHostTime + (uint64_t)curHostOffset;
-    (void)periodTicks;
     return advanced;
 }
 ```
 
-**Step 5: Run — verify PASS** (`clang ... test_nn_clock.c nn_clock.c`). Then `Driver/tests/run-tests.sh` runs both.
+**Step 5: Rewrite `Driver/tests/run-tests.sh` to compile + run BOTH tests STRICTLY** (no `|| true`, no `2>/dev/null` swallowing — CI must fail if either helper fails to compile or any assertion fails):
+
+```bash
+#!/bin/bash
+set -euo pipefail
+cd "$(dirname "$0")"
+rm -f /tmp/nn_ring_test /tmp/nn_clock_test
+clang -std=c11 -Wall -Wextra -O2 test_nn_ring.c  ../NoNoiseMic/nn_ring.c  -o /tmp/nn_ring_test
+clang -std=c11 -Wall -Wextra -O2 test_nn_clock.c ../NoNoiseMic/nn_clock.c -o /tmp/nn_clock_test
+/tmp/nn_ring_test
+/tmp/nn_clock_test
+```
+Run it — expect BOTH `nn_ring: all tests passed` AND `nn_clock: all tests passed`. This is exactly what Task 9's CI invokes.
 
 **Step 6: Commit**
 
@@ -380,13 +422,13 @@ Apply precise deltas to the vendored `NoNoiseMic.c` + `Info.plist`. Reference th
 - Modify: `Driver/NoNoiseMic/NoNoiseMic.c`
 - Modify: `Driver/NoNoiseMic/Info.plist`
 
-**Step 1: Names, UIDs, format constants** — at the top of `NoNoiseMic.c`, set the device/box/stream constants to the shared contract values: visible device name `NoNoise Mic`, UID `NoNoiseMic:visible:48k2ch`; sample rate `48000`, channels `2`, format Float32. Bundle id `com.ivalsaraj.NoNoiseMic`.
+**Step 1: Names, UIDs, format constants** — at the top of `NoNoiseMic.c`, set the device/box/stream constants to the shared contract values: visible device name `NoNoise Mic`, UID `NoNoiseMic:visible:48k2ch`; bundle id `com.ivalsaraj.NoNoiseMic`. Set the stream ASBD to the **canonical interleaved** stereo Float32 layout: `mSampleRate=48000`, `mFormatID=kAudioFormatLinearPCM`, `mFormatFlags=kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked` (do NOT set `kAudioFormatFlagIsNonInterleaved`), `mBitsPerChannel=32`, `mChannelsPerFrame=2`, `mFramesPerPacket=1`, `mBytesPerFrame=8`, `mBytesPerPacket=8`. Both the visible and engine devices use this identical ASBD.
 
 **Step 2: Add the hidden engine device (Device 2)** — duplicate the sample's single-device object model into a second `AudioObjectID` "NoNoise Mic Engine" (UID `NoNoiseMic:engine:48k2ch`): output-only, `kAudioDevicePropertyIsHidden = 1`. Both devices share ONE `nn_ring` instance (file-scope static) and ONE `nn_clock` anchor created on the first IO start.
 
 **Step 3: Bar the engine device from default selection** — in the engine device's property handlers, return `0` for `kAudioDevicePropertyDeviceCanBeDefaultDevice` and `kAudioDevicePropertyDeviceCanBeDefaultSystemDevice` (output scope). The visible device returns `1` (input-eligible).
 
-**Step 4: Add the `sourceMode` custom property** — handle selector `'srcm'` (FourCharCode `0x73726D63`… use the exact code `'srcm'`), scope global, element 0:
+**Step 4: Add the `sourceMode` custom property** — handle selector `'srcm'` (FourCharCode **`0x7372636D`**: `s=0x73, r=0x72, c=0x63, m=0x6D`; the contract table above is the single source). In C, prefer the char literal `'srcm'` so the compiler computes the value — do NOT hand-type the hex (a transposed digit fails SILENTLY and the Settings toggle never switches transports). Scope global, element 0:
 - `HasProperty` / `IsPropertySettable` → true.
 - `GetPropertyDataSize` → `sizeof(UInt32)`.
 - `GetPropertyData` → current mode (`0` loopback default, `1` xpc).
@@ -397,6 +439,8 @@ Apply precise deltas to the vendored `NoNoiseMic.c` + `Info.plist`. Reference th
 - Engine device, `kAudioServerPlugInIOOperationWriteMix` (output): `nn_ring_write_at(&gRing, ioCycleInfo->mOutputTime.mSampleTime, ioMainBuffer, frames)`.
 - Visible device, `kAudioServerPlugInIOOperationReadInput` (input): if `gSourceMode == 0` → `nn_ring_read_at(&gRing, ioCycleInfo->mInputTime.mSampleTime, ioMainBuffer, frames)`. (A2 adds the `gSourceMode == 1` branch in Phase A2.)
 - Use `nn_clock_get_zero_timestamp` in `GetZeroTimeStamp` for both devices off the shared anchor (cast mach `AudioGetCurrentHostTime()` + `AudioGetHostClockFrequency()` into `nn_clock`). Allocate `gRing` storage as a static `float[CAP*2]` with `CAP` a power of two ≥ 1 second (e.g. 65536).
+
+> **Layout invariant:** for this single‑stream stereo device, `ioMainBuffer` is ONE interleaved Float32 buffer; `gRing` is `nn_ring` with `channels=2`, so `nn_ring_write_at/read_at` consume `ioMainBuffer` directly — no de/interleave, no per‑channel pointers. `frames` is the cycle frame count (the HAL gives frames, not samples). This is the same interleaved layout the host test in Task 2 asserts.
 
 **Step 6: Info.plist — exact CFPlugIn keys** (`Driver/NoNoiseMic/Info.plist`):
 ```xml
@@ -423,11 +467,13 @@ clang -c -std=c11 -Wall Driver/NoNoiseMic/NoNoiseMic.c -o /tmp/NoNoiseMic.o && e
 ```
 Expected: compiles (warnings ok; errors not).
 
-**Step 8: Commit**
+**Step 8: Document the driver contract in `AGENTS.md` (SAME commit as the behavior)** — add a "NoNoise Mic virtual driver" section: the shared‑contract constants table, the topology (visible input + hidden engine, ONE shared clock + ONE loopback ring), the canonical interleaved layout, `sourceMode`, the "sign AFTER full assembly / verify on install" rule, and that the pure C (`nn_ring`/`nn_clock`) is the testable home for driver math (mirrors the repo's "pure testable statics" rule).
+
+**Step 9: Commit (behavior + its docs together)**
 
 ```bash
-git add Driver/NoNoiseMic/NoNoiseMic.c Driver/NoNoiseMic/Info.plist
-git commit -m "feat(driver): NoNoise Mic topology, sourceMode property, loopback IO via nn_ring"
+git add Driver/NoNoiseMic/NoNoiseMic.c Driver/NoNoiseMic/Info.plist AGENTS.md
+git commit -m "feat(driver): NoNoise Mic topology, sourceMode, interleaved loopback IO via nn_ring"
 ```
 
 ---
@@ -501,14 +547,19 @@ chmod +x build-driver.sh install-driver.sh uninstall-driver.sh
 ```
 Expected: bundle builds and ad-hoc signs.
 
-**Step 5: Commit**
+**Step 5: Land the docs that describe this behavior IN THE SAME COMMIT** (per `AGENTS.md`: docs land with the behavior).
+- `.gitignore` — add the build artifact `NoNoiseMic.driver/`.
+- `README.md` — add a "NoNoise Mic (virtual microphone)" section: build (`./build-driver.sh`), install (`./install-driver.sh`, note the brief coreaudiod restart), select **NoNoise Mic** in Slack/Zoom/Meet/OBS, uninstall (`./uninstall-driver.sh`). Keep the BlackHole section as the documented fallback. Distinguish app‑Gatekeeper (right‑click→Open) from driver‑load (coreaudiod signature check).
+- `docs/knowledge/knowledge1.md` — add a `[GOTCHA]` about silent CFPlugIn non‑load (bad `CFPlugInFactories`/`CFPlugInTypes` keys, or post‑sign edits) and that `install-driver.sh`'s verification guards it.
+
+> **Verification note (MINOR #1):** the script's `system_profiler … | grep "NoNoise Mic"` is a best‑effort user‑space probe; the AUTHORITATIVE check is the app's `driverInstalled` state (Task 7), which resolves the visible device by UID via `kAudioHardwarePropertyTranslateUIDToDevice`. The script reports the install result; the app confirms it on next device scan.
+
+**Step 6: Commit (scripts + their docs together)**
 
 ```bash
-git add build-driver.sh install-driver.sh uninstall-driver.sh
-git commit -m "feat(driver): build/install/uninstall scripts with install-time verification"
+git add build-driver.sh install-driver.sh uninstall-driver.sh .gitignore README.md docs/knowledge/knowledge1.md
+git commit -m "feat(driver): build/install/uninstall scripts (install-time verify) + docs"
 ```
-
-> `NoNoiseMic.driver/` is a build artifact — add it to `.gitignore` in Task 10.
 
 ---
 
@@ -527,19 +578,23 @@ import XCTest
 @testable import Core
 
 final class VirtualMicRoutingTests: XCTestCase {
-    private func dev(_ name: String, hidden: Bool = false) -> VirtualMicRouting.DeviceInfo {
-        .init(uid: name, name: name, isHidden: hidden, hasOutput: true)
+    // uid is DELIBERATELY distinct from name so UID-based selection is actually exercised
+    // (the runtime resolves the returned UID to an AudioObjectID — the name cannot be translated).
+    private func dev(_ name: String, uid: String? = nil, hidden: Bool = false) -> VirtualMicRouting.DeviceInfo {
+        .init(uid: uid ?? "uid:\(name)", name: name, isHidden: hidden, hasOutput: true)
     }
 
     func testAutoRoutePrefersEngineDevice() {
-        let list = [dev("BlackHole 2ch"), dev(VirtualMicRouting.engineDeviceName, hidden: true), dev("MacBook Speakers")]
-        let pick = VirtualMicRouting.preferredOutputUID(from: list)
-        XCTAssertEqual(pick, VirtualMicRouting.engineDeviceName)
+        let list = [dev("BlackHole 2ch", uid: "BH-uid"),
+                    dev(VirtualMicRouting.engineDeviceName, uid: VirtualMicRouting.engineDeviceUID, hidden: true),
+                    dev("MacBook Speakers")]
+        // Returns the engine device's UID (not its name) — the exact value runtime resolves to an ID.
+        XCTAssertEqual(VirtualMicRouting.preferredOutputUID(from: list), VirtualMicRouting.engineDeviceUID)
     }
 
     func testAutoRouteFallsBackToBlackHoleWhenNoEngine() {
-        let list = [dev("BlackHole 2ch"), dev("MacBook Speakers")]
-        XCTAssertEqual(VirtualMicRouting.preferredOutputUID(from: list), "BlackHole 2ch")
+        let list = [dev("BlackHole 2ch", uid: "BH-uid"), dev("MacBook Speakers")]
+        XCTAssertEqual(VirtualMicRouting.preferredOutputUID(from: list), "BH-uid")
     }
 
     func testAutoRouteNeverPicksPhysicalOutput() {
@@ -549,10 +604,20 @@ final class VirtualMicRoutingTests: XCTestCase {
     }
 
     func testHiddenEngineFilteredFromOutputPicker() {
-        let list = [dev("BlackHole 2ch"), dev(VirtualMicRouting.engineDeviceName, hidden: true)]
+        let list = [dev("BlackHole 2ch", uid: "BH-uid"),
+                    dev(VirtualMicRouting.engineDeviceName, uid: VirtualMicRouting.engineDeviceUID, hidden: true)]
         let visible = VirtualMicRouting.visibleOutputs(from: list).map(\.name)
         XCTAssertFalse(visible.contains(VirtualMicRouting.engineDeviceName))
         XCTAssertTrue(visible.contains("BlackHole 2ch"))
+    }
+
+    func testEngineFilteredByUIDEvenIfHiddenFlagMissing() {
+        // Guard-pair: if the HAL fails to report kAudioDevicePropertyIsHidden, the engine
+        // must STILL be excluded from the picker by its known UID.
+        let list = [dev("BlackHole 2ch", uid: "BH-uid"),
+                    dev(VirtualMicRouting.engineDeviceName, uid: VirtualMicRouting.engineDeviceUID, hidden: false)]
+        let visible = VirtualMicRouting.visibleOutputs(from: list).map(\.name)
+        XCTAssertFalse(visible.contains(VirtualMicRouting.engineDeviceName))
     }
 
     func testVirtualMicFilteredFromInputList() {
@@ -594,20 +659,34 @@ public enum VirtualMicRouting {
         }
     }
 
-    /// Output device the engine should render into: the hidden engine device if
-    /// present, else a known virtual sink (BlackHole), else nil (do NOT route to
-    /// a physical output — surface "install the driver" instead).
+    // ---- Canonical predicates (ONE source — used by discovery, picker filtering, AND auto-route) ----
+
+    /// True for our hidden engine device. Matches by UID OR name so a missing/misreported
+    /// `kAudioDevicePropertyIsHidden` flag can't leak the engine into the user's picker.
+    public static func isNoNoiseEngine(_ d: DeviceInfo) -> Bool {
+        d.uid == engineDeviceUID || d.name == engineDeviceName
+    }
+
+    /// An output the user may pick in the APP's own picker: not hidden AND not our engine.
+    public static func isSelectableOutput(_ d: DeviceInfo) -> Bool {
+        !d.isHidden && !isNoNoiseEngine(d)
+    }
+
+    /// UID of the output the engine should render into: the hidden engine device if present,
+    /// else a known virtual sink (BlackHole), else nil (do NOT route to a physical output —
+    /// surface "install the driver" instead). Returns the device UID — the exact value the
+    /// runtime resolves to an AudioObjectID, so the tested predicate IS the runtime predicate.
     public static func preferredOutputUID(from devices: [DeviceInfo]) -> String? {
-        if let engine = devices.first(where: { $0.name == engineDeviceName }) { return engine.uid }
+        if let engine = devices.first(where: isNoNoiseEngine) { return engine.uid }
         if let bh = devices.first(where: { d in fallbackVirtualSinks.contains(where: { d.name.contains($0) }) }) {
             return bh.uid
         }
         return nil
     }
 
-    /// Output devices to show in the app's own picker — hidden devices excluded.
+    /// Output devices to show in the app's own picker — hidden + engine excluded.
     public static func visibleOutputs(from devices: [DeviceInfo]) -> [DeviceInfo] {
-        devices.filter { !$0.isHidden }
+        devices.filter(isSelectableOutput)
     }
 
     /// Remove the virtual mic from a list of input device names (prevents a
@@ -617,7 +696,7 @@ public enum VirtualMicRouting {
     }
 }
 ```
-(Note: in `preferredOutputUID`, BlackHole's UID would be its real device UID at runtime; the test passes `uid == name` for simplicity.)
+(Note: tests pass UIDs distinct from names — e.g. engine `uid == engineDeviceUID`, BlackHole `uid == "BH-uid"` — so the UID that `preferredOutputUID` returns is exactly what Task 7 resolves to an `AudioObjectID` at runtime. At runtime the real UIDs come from `kAudioDevicePropertyDeviceUID`.)
 
 **Step 4: Run — verify PASS**
 
@@ -625,7 +704,7 @@ public enum VirtualMicRouting {
 cd /Users/valsaraj/Downloads/MetalVoice_v1.1/MetalVoice-src
 swift test --filter VirtualMicRoutingTests
 ```
-Expected: 5 tests pass.
+Expected: 6 tests pass.
 
 **Step 5: Commit**
 
@@ -641,10 +720,22 @@ git commit -m "feat(core): add pure virtual-mic routing/filtering logic + tests"
 **Files:**
 - Modify: `Sources/Core/AudioModel.swift`
 
-**Step 1: Add `kAudioDevicePropertyIsHidden` to `fetchOutputDevices`** — after reading each device name, query its hidden flag and skip hidden devices (drops "NoNoise Mic Engine" from the picker). Build a `[VirtualMicRouting.DeviceInfo]` alongside `[DeviceStruct]`.
+**Step 1: Read each device's REAL UID + hidden flag; build `[DeviceInfo]` + a UID→ID map** — in the `fetchOutputDevices` loop, after obtaining the name, ALSO read `kAudioDevicePropertyDeviceUID` (a `CFString`). Populate `DeviceInfo.uid` with the REAL UID, NOT the name — the name cannot be translated to an `AudioObjectID`, so filling `uid` with the name (the prior bug) silently breaks auto-route. Filter the app's own picker through the canonical predicate so the engine can't leak in even if the hidden flag is missing.
 
 ```swift
-// inside the device loop, after obtaining `cf as String`:
+// Declare BEFORE the loop:
+var allDevs: [VirtualMicRouting.DeviceInfo] = []
+var uidToID: [String: AudioObjectID] = [:]
+
+// Inside the device loop, after obtaining `cf as String` (the name):
+var uidCF: CFString? = nil
+var uidSize = UInt32(MemoryLayout<CFString?>.size)
+var uidAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID,
+                                         mScope: kAudioObjectPropertyScopeGlobal,
+                                         mElement: kAudioObjectPropertyElementMain)
+AudioObjectGetPropertyData(id, &uidAddr, 0, nil, &uidSize, &uidCF)
+let realUID = (uidCF as String?) ?? (cf as String)
+
 var hidden: UInt32 = 0
 var hiddenSize = UInt32(MemoryLayout<UInt32>.size)
 var hiddenAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyIsHidden,
@@ -653,14 +744,18 @@ var hiddenAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyIsHid
 if AudioObjectHasProperty(id, &hiddenAddr) {
     AudioObjectGetPropertyData(id, &hiddenAddr, 0, nil, &hiddenSize, &hidden)
 }
-if hidden == 0 {
+
+let info = VirtualMicRouting.DeviceInfo(uid: realUID, name: cf as String,
+                                        isHidden: hidden != 0, hasOutput: true)
+allDevs.append(info)
+uidToID[realUID] = id
+if VirtualMicRouting.isSelectableOutput(info) {       // canonical predicate (hidden OR engine excluded)
     newDevs.append(DeviceStruct(id: id, name: cf as String))
 }
-allDevs.append(VirtualMicRouting.DeviceInfo(uid: (cf as String), name: (cf as String),
-                                            isHidden: hidden != 0, hasOutput: true))
 ```
+> **Scope note:** these reads/appends live inside the existing output-stream block (`if size > 0` at `Sources/Core/AudioModel.swift:274`), so `allDevs`/`uidToID` contain only OUTPUT-capable devices. That's exactly right for auto-route (the route target is the output-capable "NoNoise Mic Engine"). The input-only visible "NoNoise Mic" is intentionally absent here and is detected separately in Step 2 by UID translate — do NOT use `allDevs` to detect it.
 
-**Step 2: Resolve the hidden engine device by UID and auto-route to it** — add a helper using `kAudioHardwarePropertyTranslateUIDToDevice`, and prefer it in the default-output selection (replacing the current "default to BlackHole"):
+**Step 2: Auto-route via the SAME pure predicate the tests cover** — pick the output UID with `VirtualMicRouting.preferredOutputUID(from: allDevs)` (allDevs INCLUDES the hidden engine — that's the route target), then resolve it through `uidToID` (O(1), no extra CoreAudio call), falling back to a `deviceID(forUID:)` translate for robustness. Detect install by the VISIBLE device's UID — that's the device Slack/Zoom actually see. This replaces the current name-based "default to BlackHole" at `Sources/Core/AudioModel.swift:287-288`.
 
 ```swift
 private func deviceID(forUID uid: String) -> AudioObjectID {
@@ -677,16 +772,16 @@ private func deviceID(forUID uid: String) -> AudioObjectID {
     return translated
 }
 ```
-In `fetchOutputDevices`'s `DispatchQueue.main.async` block, set `driverInstalled` and prefer the engine device:
+In `fetchOutputDevices`'s `DispatchQueue.main.async` block:
 ```swift
-let engineID = self.deviceID(forUID: VirtualMicRouting.engineDeviceUID)
-self.driverInstalled = engineID != 0
-if engineID != 0 {
-    self.selectedOutputDeviceID = engineID
-} else if let bh = newDevs.first(where: { $0.name.contains("BlackHole") }) {
-    self.selectedOutputDeviceID = bh.id
+self.outputDevices = newDevs
+// The visible "NoNoise Mic" is INPUT-only, so it is NOT in the output-scoped allDevs above.
+// Detect install by translating the visible UID directly (translate resolves input-only devices too).
+self.driverInstalled = self.deviceID(forUID: VirtualMicRouting.visibleDeviceUID) != 0
+if let uid = VirtualMicRouting.preferredOutputUID(from: allDevs) {      // engine (output-capable), else BlackHole, else nil
+    self.selectedOutputDeviceID = uidToID[uid] ?? self.deviceID(forUID: uid)
 }
-// else: leave unset — do NOT auto-route to a physical output.
+// else: no virtual sink → leave unset; do NOT auto-route to a physical output.
 ```
 
 **Step 3: Add `driverInstalled` published state**
@@ -705,13 +800,17 @@ devs = devs.filter { VirtualMicRouting.filterInputs([$0.localizedName]).isEmpty 
 ```bash
 swift build && swift test
 ```
-Expected: clean build; all tests pass (existing 30 + 5 new).
+Expected: clean build; all tests pass (existing 30 + 6 new).
 
-**Step 6: Commit**
+**Step 6: Update setup copy + routing docs (SAME commit as the behavior)** — when A1 lands, the app's guidance must match reality:
+- `Sources/App/SettingsView.swift:206-216` — rewrite the BlackHole‑first setup guide to the NoNoise Mic routing model (the visible "NoNoise Mic" is an INPUT device, not an output): in the **app**, keep your real mic as the input — output is **automatic** via the hidden "NoNoise Mic Engine", with NO manual output selection; in **Slack/Zoom/Meet/OBS**, set the **microphone** to **"NoNoise Mic"**. BlackHole stays as a fallback only when the driver is unavailable. Do NOT instruct users to pick the hidden engine or a physical output. [MINOR #3 + Round 2 regression fix]
+- `AGENTS.md` — add a short "routing" note under the driver section: the app auto‑routes its engine output to the hidden "NoNoise Mic Engine" via `VirtualMicRouting.preferredOutputUID` and filters virtual devices from its own pickers.
+
+**Step 7: Commit (behavior + its docs together)**
 
 ```bash
-git add Sources/Core/AudioModel.swift
-git commit -m "feat(core): auto-route engine device, filter hidden/virtual devices"
+git add Sources/Core/AudioModel.swift Sources/App/SettingsView.swift AGENTS.md
+git commit -m "feat(core): auto-route engine device, filter hidden/virtual devices + docs"
 ```
 
 ---
@@ -721,23 +820,30 @@ git commit -m "feat(core): auto-route engine device, filter hidden/virtual devic
 **Files:**
 - Modify: `Sources/App/ContentView.swift`
 
-**Step 1: Add a status row** under the devices card (only when not installed, keep it minimal):
+**Step 1: Add a status row** under the devices card — reflect BOTH states (the installed confirmation is the "✅ Slack will hear you" north‑star signal; keep it one compact row):
 
 ```swift
-if !audioModel.driverInstalled {
-    HStack(spacing: 8) {
+HStack(spacing: 8) {
+    if audioModel.driverInstalled {
+        Image(systemName: "checkmark.circle.fill").foregroundColor(.green)
+        VStack(alignment: .leading, spacing: 1) {
+            Text("NoNoise Mic ready").font(.caption).fontWeight(.medium)
+            Text("Pick “NoNoise Mic” as the mic in Slack/Zoom/Meet/OBS.")
+                .font(.caption2).foregroundColor(.secondary)
+        }
+    } else {
         Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
         VStack(alignment: .leading, spacing: 1) {
             Text("NoNoise Mic not installed").font(.caption).fontWeight(.medium)
             Text("Run ./install-driver.sh to add the virtual mic.")
                 .font(.caption2).foregroundColor(.secondary)
         }
-        Spacer()
     }
-    .nnCard()
+    Spacer()
 }
+.nnCard()
 ```
-(When installed, show nothing extra — keeps the popover clean; full status UI is Spec B.)
+(Both states are intentionally one compact row; the full health dashboard — "✅ Slack will hear you", system‑default‑trap warnings — is Spec B.)
 
 **Step 2: Build**
 
@@ -786,29 +892,25 @@ git commit -m "ci: compile NoNoise Mic driver + run host ring/clock tests"
 
 ---
 
-## Task 10: Docs + `.gitignore`
+## Task 10: Phase A1 knowledge + timeline consolidation (doc-only)
+
+Behavior docs already landed WITH their behavior — Task 4 (AGENTS driver contract), Task 5 (README install + `.gitignore` + knowledge `[GOTCHA]`), Task 7 (SettingsView copy + AGENTS routing). This task is the legitimate doc‑only close‑out: the compounding timeline entry plus any cross‑links.
 
 **Files:**
-- Modify: `README.md`, `AGENTS.md`, `.gitignore`, `docs/knowledge/timeline1.md`, `docs/knowledge/knowledge1.md`
+- Modify: `docs/knowledge/timeline1.md`, `docs/knowledge/INDEX.md` (if it indexes timeline entries)
 
-**Step 1: `.gitignore`** — add the build artifact:
+**Step 1: `docs/knowledge/timeline1.md`** — prepend a dated entry summarizing Phase A1: NoNoise Mic virtual driver shipped (loopback transport, auto‑route, host‑tested `nn_ring`/`nn_clock`), the canonical interleaved‑layout decision, and a cross‑ref to the silent‑non‑load `[GOTCHA]` (added in Task 5).
+
+**Step 2: Verify no behavior doc was missed** — confirm README/AGENTS already describe the driver (they should, from Tasks 4/5/7):
+```bash
+grep -n "NoNoise Mic" README.md AGENTS.md | head
 ```
-NoNoiseMic.driver/
-```
 
-**Step 2: `README.md`** — add a "NoNoise Mic (virtual microphone)" section: build (`./build-driver.sh`), install (`./install-driver.sh`, note the coreaudiod restart), select "NoNoise Mic" in Slack/Zoom/Meet/OBS, uninstall. Keep the BlackHole section as the documented fallback. Distinguish app-Gatekeeper (right-click-Open) from driver-load (coreaudiod signature check).
-
-**Step 3: `AGENTS.md`** — add a "NoNoise Mic virtual driver" section: the shared-contract constants table, the topology (visible input + hidden engine, shared clock + ring), `sourceMode`, the "sign after assembly / verify on install" rules, and that the pure C (`nn_ring`/`nn_clock`) is the testable home for driver math (mirroring the "pure testable statics" rule).
-
-**Step 4: `docs/knowledge/timeline1.md`** — prepend a dated entry summarizing Phase A1.
-
-**Step 5: `docs/knowledge/knowledge1.md`** — add a `[GOTCHA]` about silent CFPlugIn non-load (bad `CFPlugInFactories`/`CFPlugInTypes` or post-sign edits) and the install-time verification that guards it.
-
-**Step 6: Commit**
+**Step 3: Commit**
 
 ```bash
-git add README.md AGENTS.md .gitignore docs/knowledge/timeline1.md docs/knowledge/knowledge1.md
-git commit -m "docs: document NoNoise Mic driver (install, contract, gotchas)"
+git add docs/knowledge/timeline1.md docs/knowledge/INDEX.md
+git commit -m "docs(knowledge): Phase A1 timeline entry for NoNoise Mic driver"
 ```
 
 ---
@@ -864,8 +966,9 @@ git commit -m "build: optional --with-driver staging in bundle.sh"
 2. From the (installed, loopback) driver, attempt `xpc_connection_create_mach_service(...)` to the helper and send one message; log success/failure to Console.
 3. From the app, `shm_open`+`mmap` a small region, pass its FD to the helper over XPC, have the helper forward it to the driver, and have the driver `mmap` the received FD and read a sentinel value the app wrote.
 4. Record results in `docs/knowledge/knowledge1.md` as a `[DECISION]` (helper vs direct; any sandbox profile caveats).
+5. **Produce the A2 emission design decision record (this GATES Tasks 13–18).** Pick ONE emission architecture — `AVAudioEngine` manual‑rendering mode XOR an `AVAudioSinkNode` tap, NOT both — and pin, in the same `[DECISION]`: when/where the bound‑output engine from `setupPlaybackEngine()` is torn down, how manual rendering is clocked, shm write‑cursor ownership, heartbeat cadence, quit‑teardown sequence, and the EXACT ordering of setting the driver `'srcm'` property relative to switching the app's emission path. Tasks 13–18 implement this record verbatim; they do not re‑decide architecture.
 
-**Gate:** ✅ all three succeed → proceed. ❌ any blocked → STOP, report to user.
+**Gate:** ✅ all three reachability checks succeed AND the emission decision record is written → proceed. ❌ any blocked → STOP, report to user.
 
 **Commit:** the spike code under `Driver/spike/` (kept for reference) + the knowledge entry.
 
@@ -886,9 +989,9 @@ Create `Helper/NoNoiseMicHelper/` (per the spike's chosen shape): an `NSXPCListe
 
 In `DoIOOperation` (visible input), when `gSourceMode == 1`: read from the `mmap`ed shm ring at `mInputTime.mSampleTime`; if the shm `generation` is stale (no live writer), output silence. The `mmap` happens once when the helper hands the FD over (store the mapped pointer in a file-scope atomic). Commit.
 
-## Task 16: App — XPC client + manual-render PCM emission
+## Task 16: App — XPC client + PCM emission (per Task 12's decision record)
 
-In `xpc` mode the app does NOT bind an output device. Switch `AVAudioEngine` to manual-rendering mode (or attach an `AVAudioSinkNode` tap on the existing graph), write rendered 48 kHz stereo Float32 into the shm ring, and bump the liveness header each buffer. Connect to the helper, hand off the shm FD, and tear down (stop heartbeat) on quit so the driver falls back to silence. Add pure-logic tests where possible (e.g., heartbeat/teardown state machine). Commit.
+In `xpc` mode the app does NOT bind an output device. Implement the SINGLE emission architecture chosen in Task 12's `[DECISION]` (manual‑rendering XOR `AVAudioSinkNode` — not "or"). Per that record: tear down the bound‑output engine built in `setupPlaybackEngine()`, write rendered 48 kHz **interleaved** stereo Float32 into the shm ring, bump the liveness header each buffer, connect to the helper and hand off the shm FD, and on quit stop the heartbeat so the driver serves silence. Add pure‑logic tests for the heartbeat/teardown state machine. Commit.
 
 ## Task 17: Settings `sourceMode` toggle + persistence + default flip
 
