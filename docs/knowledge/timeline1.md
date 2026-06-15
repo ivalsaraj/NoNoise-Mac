@@ -2,6 +2,10 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Single brand logo in popover
+- Kept the NoNoise PNG as the popover header logo, and changed the Noise Cancellation status-card
+  badge back to a semantic SF Symbol so the widget does not show duplicate brand marks.
+
 ### 2026-06-15 — Stable release after successful main CI
 - Updated `.github/workflows/release.yml` so a successful `CI` workflow on `main` automatically
   rebuilds, bundles, and uploads the latest `NoNoiseMac.app`, `NoNoiseMacCLI`, `NoNoiseMic.driver`,

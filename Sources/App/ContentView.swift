@@ -60,9 +60,9 @@ struct ContentView: View {
                     Circle()
                         .fill(on ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.12))
                         .frame(width: 42, height: 42)
-                    NoNoiseLogoAsset()
-                        .frame(width: 30, height: 30)
-                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    Image(systemName: on ? "waveform.badge.magnifyingglass" : "waveform.slash")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(on ? .accentColor : .secondary)
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Noise Cancellation")
