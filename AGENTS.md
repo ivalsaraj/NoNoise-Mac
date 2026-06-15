@@ -40,7 +40,11 @@ swift build                 # debug
 swift build -c release      # release (bundle.sh prerequisite)
 swift test                  # 30 pure tests — no mic/CoreML runtime needed
 ./bundle.sh                 # → NoNoiseMac.app + NoNoiseMacCLI (codesigned w/ entitlements)
+./bundle.sh --with-driver   # also builds NoNoiseMic.driver and stages it NEXT TO the app
 ```
+The virtual mic has its own scripts: `./build-driver.sh`, `sudo ./install-driver.sh`,
+`sudo ./uninstall-driver.sh` (see "NoNoise Mic virtual driver" below). The driver is staged as a
+sibling of the app, never nested inside the signed `.app`.
 The app is a menu-bar utility (`LSUIElement`); **AI noise cancellation is ON by default**
 (`AudioModel.isAIEnabled = true`).
 
