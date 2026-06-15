@@ -2,6 +2,13 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — CI Swift 5.10 compatibility + tag-gated release workflow
+- Gated unused `MLShapedArray<Float16>` convenience APIs in the generated CoreML wrapper behind
+  `#if compiler(>=6.0)` so GitHub Actions' macos-14 / Swift 5.10 runner can compile the project.
+  Runtime DSP still uses the `MLMultiArray` path required by the CoreML output-readback rule.
+- Added `.github/workflows/release.yml`: only `v*` tags whose commit is contained in `origin/main`
+  publish zipped `NoNoiseMac.app`, `NoNoiseMacCLI`, `NoNoiseMic.driver`, and checksums.
+
 ### 2026-06-15 — Apple Silicon install script
 - Added `install-app.sh`, a one-command local installer that runs `swift build -c release --arch arm64`,
   bundles/signs `NoNoiseMac.app`, installs it to `/Applications`, verifies the copied app signature,

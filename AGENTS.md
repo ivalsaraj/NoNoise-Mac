@@ -52,6 +52,13 @@ builds are the optimized path for M-series chips.
 The app is a menu-bar utility (`LSUIElement`); **AI noise cancellation is ON by default**
 (`AudioModel.isAIEnabled = true`).
 
+## CI & releases
+`.github/workflows/ci.yml` runs on pushes to `main` and pull requests targeting `main`; it only
+builds and tests. It does NOT publish artifacts or create releases. `.github/workflows/release.yml`
+publishes release assets only for `v*` tags whose commit is contained in `origin/main` (or manual
+dispatch with such a tag). Release assets are zipped `NoNoiseMac.app`, `NoNoiseMacCLI`,
+`NoNoiseMic.driver`, and `SHA256SUMS`.
+
 ## Entitlements & signing
 `bundle.sh` codesigns with `Resources/NoNoiseMac.entitlements`, kept **intentionally minimal** —
 exactly two keys:
@@ -96,6 +103,10 @@ Do not add entitlements beyond these two without a measured, documented need.
   - **NEVER read those output arrays with raw `withUnsafeBufferPointer(ofType: Float16.self)`.** On ANE/GPU outputs this reads back as **zeros** → `realOut`/`imaginaryOut` go silent → **the app produces no audio when AI is on**. This actually shipped and broke playback. Read outputs via the `NSNumber` subscript (`enhanced[[...] as [NSNumber]].floatValue`, `oEnc[i].floatValue`) which forces correct CPU materialization.
   - Writing to **input** arrays we allocate ourselves (`specBufIn`, `erbBufIn`, `featSpecBufIn`) via `withUnsafeMutableBufferPointer(ofType: Float.self)` IS safe — those are plain CPU-backed buffers. Hidden-state inputs (`hEncIn`/`hErbIn`/`hDfIn`, `.float16`) are written via `NSNumber(value:)`.
   - Bottom line: buffer pointers are fine for arrays WE allocate and fill; `NSNumber` is mandatory for arrays the MODEL fills.
+- `Sources/Core/AudioProcessing/DeepFilterNet3_Streaming.swift` is generated, but its unused
+  `MLShapedArray<Float16>` conveniences are intentionally gated behind `#if compiler(>=6.0)`.
+  GitHub Actions currently builds with Swift 5.10, where that Float16 conformance is unavailable on
+  macOS. If the wrapper is regenerated, preserve the gate or remove the shaped-array conveniences.
 - Hidden state (`h_enc_buf`, `h_erb_buf`, `h_df_buf`) is stored as `[Float]` and bridged to/from the model via `NSNumber`. Do not "optimize" to `[Float16]` + raw buffer reads — the read-back comes from a model output array (see above).
 
 ## Real-time audio rules

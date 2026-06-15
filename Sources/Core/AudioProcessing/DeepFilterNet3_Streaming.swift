@@ -62,6 +62,7 @@ class DeepFilterNet3_StreamingInput : MLFeatureProvider {
         self.h_df_in = h_df_in
     }
 
+    #if compiler(>=6.0)
     #if (os(macOS) || targetEnvironment(macCatalyst)) && arch(x86_64)
     @available(macOS, unavailable)
     @available(macCatalyst, unavailable)
@@ -71,6 +72,7 @@ class DeepFilterNet3_StreamingInput : MLFeatureProvider {
     convenience init(spec_buf: MLShapedArray<Float16>, feat_erb_buf: MLShapedArray<Float16>, feat_spec_buf: MLShapedArray<Float16>, h_enc_in: MLShapedArray<Float16>, h_erb_in: MLShapedArray<Float16>, h_df_in: MLShapedArray<Float16>) {
         self.init(spec_buf: MLMultiArray(spec_buf), feat_erb_buf: MLMultiArray(feat_erb_buf), feat_spec_buf: MLMultiArray(feat_spec_buf), h_enc_in: MLMultiArray(h_enc_in), h_erb_in: MLMultiArray(h_erb_in), h_df_in: MLMultiArray(h_df_in))
     }
+    #endif
 
 }
 
@@ -88,6 +90,7 @@ class DeepFilterNet3_StreamingOutput : MLFeatureProvider {
     }
 
     /// enhanced_spec as 1 × 1 × 1 × 481 × 2 5-dimensional array of 16-bit floats
+    #if compiler(>=6.0)
     #if (os(macOS) || targetEnvironment(macCatalyst)) && arch(x86_64)
     @available(macOS, unavailable)
     @available(macCatalyst, unavailable)
@@ -97,6 +100,7 @@ class DeepFilterNet3_StreamingOutput : MLFeatureProvider {
     var enhanced_specShapedArray: MLShapedArray<Float16> {
         MLShapedArray<Float16>(enhanced_spec)
     }
+    #endif
 
     /// mask as 1 × 1 × 1 × 32 4-dimensional array of 16-bit floats
     var mask: MLMultiArray {
@@ -104,6 +108,7 @@ class DeepFilterNet3_StreamingOutput : MLFeatureProvider {
     }
 
     /// mask as 1 × 1 × 1 × 32 4-dimensional array of 16-bit floats
+    #if compiler(>=6.0)
     #if (os(macOS) || targetEnvironment(macCatalyst)) && arch(x86_64)
     @available(macOS, unavailable)
     @available(macCatalyst, unavailable)
@@ -113,6 +118,7 @@ class DeepFilterNet3_StreamingOutput : MLFeatureProvider {
     var maskShapedArray: MLShapedArray<Float16> {
         MLShapedArray<Float16>(mask)
     }
+    #endif
 
     /// lsnr as 1 × 1 × 1 3-dimensional array of 16-bit floats
     var lsnr: MLMultiArray {
@@ -120,6 +126,7 @@ class DeepFilterNet3_StreamingOutput : MLFeatureProvider {
     }
 
     /// lsnr as 1 × 1 × 1 3-dimensional array of 16-bit floats
+    #if compiler(>=6.0)
     #if (os(macOS) || targetEnvironment(macCatalyst)) && arch(x86_64)
     @available(macOS, unavailable)
     @available(macCatalyst, unavailable)
@@ -129,6 +136,7 @@ class DeepFilterNet3_StreamingOutput : MLFeatureProvider {
     var lsnrShapedArray: MLShapedArray<Float16> {
         MLShapedArray<Float16>(lsnr)
     }
+    #endif
 
     /// h_enc_out as 1 × 1 × 256 3-dimensional array of 16-bit floats
     var h_enc_out: MLMultiArray {
@@ -136,6 +144,7 @@ class DeepFilterNet3_StreamingOutput : MLFeatureProvider {
     }
 
     /// h_enc_out as 1 × 1 × 256 3-dimensional array of 16-bit floats
+    #if compiler(>=6.0)
     #if (os(macOS) || targetEnvironment(macCatalyst)) && arch(x86_64)
     @available(macOS, unavailable)
     @available(macCatalyst, unavailable)
@@ -145,6 +154,7 @@ class DeepFilterNet3_StreamingOutput : MLFeatureProvider {
     var h_enc_outShapedArray: MLShapedArray<Float16> {
         MLShapedArray<Float16>(h_enc_out)
     }
+    #endif
 
     /// h_erb_out as 1 × 2 × 256 3-dimensional array of 16-bit floats
     var h_erb_out: MLMultiArray {
@@ -152,6 +162,7 @@ class DeepFilterNet3_StreamingOutput : MLFeatureProvider {
     }
 
     /// h_erb_out as 1 × 2 × 256 3-dimensional array of 16-bit floats
+    #if compiler(>=6.0)
     #if (os(macOS) || targetEnvironment(macCatalyst)) && arch(x86_64)
     @available(macOS, unavailable)
     @available(macCatalyst, unavailable)
@@ -161,6 +172,7 @@ class DeepFilterNet3_StreamingOutput : MLFeatureProvider {
     var h_erb_outShapedArray: MLShapedArray<Float16> {
         MLShapedArray<Float16>(h_erb_out)
     }
+    #endif
 
     /// h_df_out as 1 × 2 × 256 3-dimensional array of 16-bit floats
     var h_df_out: MLMultiArray {
@@ -168,6 +180,7 @@ class DeepFilterNet3_StreamingOutput : MLFeatureProvider {
     }
 
     /// h_df_out as 1 × 2 × 256 3-dimensional array of 16-bit floats
+    #if compiler(>=6.0)
     #if (os(macOS) || targetEnvironment(macCatalyst)) && arch(x86_64)
     @available(macOS, unavailable)
     @available(macCatalyst, unavailable)
@@ -177,6 +190,7 @@ class DeepFilterNet3_StreamingOutput : MLFeatureProvider {
     var h_df_outShapedArray: MLShapedArray<Float16> {
         MLShapedArray<Float16>(h_df_out)
     }
+    #endif
 
     var featureNames: Set<String> {
         provider.featureNames
@@ -428,6 +442,7 @@ class DeepFilterNet3_Streaming {
         - returns: the result of the prediction as DeepFilterNet3_StreamingOutput
     */
 
+    #if compiler(>=6.0)
     #if (os(macOS) || targetEnvironment(macCatalyst)) && arch(x86_64)
     @available(macOS, unavailable)
     @available(macCatalyst, unavailable)
@@ -438,6 +453,7 @@ class DeepFilterNet3_Streaming {
         let input_ = DeepFilterNet3_StreamingInput(spec_buf: spec_buf, feat_erb_buf: feat_erb_buf, feat_spec_buf: feat_spec_buf, h_enc_in: h_enc_in, h_erb_in: h_erb_in, h_df_in: h_df_in)
         return try prediction(input: input_)
     }
+    #endif
 
     /**
         Make a batch prediction using the structured interface

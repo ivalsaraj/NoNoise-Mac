@@ -23,7 +23,7 @@ jobs:
         run: swift test
 
       - name: Build (release)
-        run: swift build -c release
+        run: swift build -c release --arch arm64
 
       - name: Build NoNoise Mic driver (compile + sign check)
         run: ./build-driver.sh

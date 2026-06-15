@@ -5,6 +5,17 @@ for the must-read failure modes.
 
 ---
 
+### [GOTCHA] 2026-06-15 — Swift 5.10 CI cannot type-check `MLShapedArray<Float16>` on macOS
+- **Symptom:** GitHub Actions failed in `swift build` on macos-14 / Swift 5.10 with
+  `conformance of 'Float16' to 'MLShapedArrayScalar' is unavailable in macOS`, while local Swift 6.3
+  builds were green.
+- **Root cause:** the generated CoreML wrapper exposed unused `MLShapedArray<Float16>` convenience
+  initializers/properties. Even with `@available(macOS 15.0, *)`, Swift 5.10 still type-checks the
+  signature and rejects the unavailable Float16 conformance.
+- **Fix/Rule:** keep runtime DSP on the `MLMultiArray` path and gate the shaped-array conveniences
+  behind `#if compiler(>=6.0)` in `Sources/Core/AudioProcessing/DeepFilterNet3_Streaming.swift`.
+  If the wrapper is regenerated, preserve that gate or delete those conveniences.
+
 ### [GOTCHA] 2026-06-15 — A hidden device is NOT in `kAudioHardwarePropertyDevices`; route to it by UID translate
 - **Symptom (first on-device test):** "NoNoise Mic" appeared in recorders but produced **silence**. The
   app was rendering cleaned audio to **BlackHole** instead of the NoNoise engine.
