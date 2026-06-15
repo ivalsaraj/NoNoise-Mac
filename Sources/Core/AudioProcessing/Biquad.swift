@@ -37,6 +37,22 @@ public struct Biquad {
         setShelf(freq: freq, gainDb: gainDb, sampleRate: sampleRate, low: false)
     }
 
+    /// RBJ peaking EQ (bell). Unity gain at DC and Nyquist; boosts/cuts `gainDb`
+    /// around `freq`. A wide `q` (~0.7) gives a broad, musical lift that adds
+    /// presence without coloring the voice's identity.
+    public mutating func setPeaking(freq: Float, gainDb: Float, sampleRate: Float, q: Float = 0.707) {
+        let A = powf(10, gainDb / 40)
+        let w0 = 2 * Float.pi * max(freq, 1) / sampleRate
+        let cs = cosf(w0), sn = sinf(w0)
+        let alpha = sn / (2 * max(q, 0.0001))
+        let a0 = 1 + alpha / A
+        b0 = (1 + alpha * A) / a0
+        b1 = (-2 * cs) / a0
+        b2 = (1 - alpha * A) / a0
+        a1 = (-2 * cs) / a0
+        a2 = (1 - alpha / A) / a0
+    }
+
     private mutating func setShelf(freq: Float, gainDb: Float, sampleRate: Float, low: Bool) {
         let A = powf(10, gainDb / 40)
         let w0 = 2 * Float.pi * max(freq, 1) / sampleRate

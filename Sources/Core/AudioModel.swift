@@ -16,6 +16,7 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     @Published public var inputDevices: [AVCaptureDevice] = [] // Changed to AVCaptureDevice
     @Published public var selectedInputDeviceID: String = "" { // IDs are Strings in AVCapture
         didSet {
+             guard selectedInputDeviceID != oldValue else { return }
              setupCaptureSession()
         }
     }
@@ -28,6 +29,7 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     @Published public var outputDevices: [DeviceStruct] = []
     @Published public var selectedOutputDeviceID: AudioObjectID = 0 {
         didSet {
+             guard selectedOutputDeviceID != oldValue else { return }
              setupPlaybackEngine()
         }
     }
@@ -40,6 +42,36 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     /// which doesn't pin the mic just because the app is open.
     @Published public var virtualMicInUse: Bool = false
 
+    // Incoming / guest cleanup (clean the OTHER side). Off by default — the second CoreML
+    // stream has real ANE cost, so the engine is created only while enabled (see plan perf note).
+    @Published public var incomingCleanupEnabled: Bool = false {
+        didSet {
+            guard !isApplyingPreset else { return }
+            applyIncomingCleanup()
+            persistIncomingSettings()
+        }
+    }
+    /// HAL UID of the loopback/aggregate INPUT carrying the call app's output.
+    @Published public var incomingSourceUID: String = "" {
+        didSet {
+            guard !isApplyingPreset, incomingSourceUID != oldValue else { return }
+            applyIncomingCleanup()
+            persistIncomingSettings()
+        }
+    }
+    /// AudioObjectID of the monitor output (real speakers/headphones) the user hears the guest on.
+    @Published public var incomingOutputDeviceID: AudioObjectID = 0 {
+        didSet {
+            guard !isApplyingPreset, incomingOutputDeviceID != oldValue else { return }
+            applyIncomingCleanup()
+            persistIncomingSettings()
+        }
+    }
+    /// Input devices offered as the incoming source (loopback/aggregate; our devices + hidden excluded).
+    @Published public var incomingSourceDevices: [DeviceStruct] = []
+    /// Real outputs offered to monitor the cleaned guest (loopback sinks + our engine excluded).
+    @Published public var monitorOutputDevices: [DeviceStruct] = []
+
     // On-demand capture: when the virtual mic is installed we capture the real mic ONLY while a
     // consumer app is using "NoNoise Mic" (observed via kAudioDevicePropertyDeviceIsRunningSomewhere).
     // Without the driver (BlackHole fallback) there's no per-use signal, so we capture continuously.
@@ -49,6 +81,12 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
         mScope: kAudioObjectPropertyScopeGlobal,
         mElement: kAudioObjectPropertyElementMain)
+    private var hardwareDevicesListener: AudioObjectPropertyListenerBlock?
+    private var hardwareDevicesAddr = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDevices,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain)
+    private var deviceRefreshWorkItem: DispatchWorkItem?
     private var onDemandMode: Bool { micDeviceID != 0 }
     private var shouldCapture: Bool { !onDemandMode || virtualMicInUse }
     
@@ -101,7 +139,58 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         }
     }
 
+    /// "Broadcast Voice" clarity level. Layered on top of the active preset
+    /// (independent of the noise preset and of Voice Polish). Guarded like the
+    /// other knobs so `loadSettings` can restore it without re-persisting mid-load.
+    @Published public var clarityLevel: ClarityLevel = .off {
+        didSet {
+            guard !isApplyingPreset else { return }
+            applyVoiceChain()
+            persistSettings()
+        }
+    }
+
+    /// App-level pre-DSP input trim (25%…100%). Does not write macOS hardware volume.
+    private var realtimeInputVolume: Float = 1.0
+
+    @Published public var inputVolumeValue: Float = 1.0 {
+        didSet {
+            realtimeInputVolume = SmartLevelController.runtimeInputVolume(for: inputVolumeValue)
+            guard !isApplyingPreset else { return }
+            persistSettings()
+        }
+    }
+
+    @Published public var smartLevelEnabled: Bool = false {
+        didSet {
+            guard !isApplyingPreset else { return }
+            if !smartLevelEnabled { smartLevelMessage = nil }
+            persistSettings()
+        }
+    }
+
+    @Published public var rawInputPeak: Float = 0.0
+    @Published public var trimmedInputPeak: Float = 0.0
+    @Published public var outputPeak: Float = 0.0
+    @Published public var isInputNearCeiling: Bool = false
+    @Published public var isOutputClipping: Bool = false
+    @Published public var isSourceMicClipping: Bool = false
+    @Published public var smartLevelMessage: String?
+
     private var isApplyingPreset = false
+
+    // Telemetry scalars written by capture/render; published by the meter timer (~25 Hz).
+    private var tInputLevel: Float = 0
+    private var tRawInputPeak: Float = 0
+    private var tTrimmedInputPeak: Float = 0
+    private var tOutputPeak: Float = 0
+    private var tOutputClipCount: Int32 = 0
+    private var tRawInputClipCount: Int32 = 0
+    private var tTrimmedInputHotCount: Int32 = 0
+    private var meterTimer: Timer?
+    private var consecutiveTrimmedHotTicks = 0
+    private var consecutiveOutputClipTicks = 0
+    private var lastSmartLevelAdjustTime: Date?
 
     private enum PrefKey {
         static let preset = "mv.preset"
@@ -109,6 +198,12 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         static let atten = "mv.attenuationLimitDb"
         static let gain = "mv.outputGain"
         static let voicePolish = "mv.voicePolish"
+        static let clarity = "mv.clarity"
+        static let inputVolume = "mv.inputVolume"
+        static let smartLevel = "mv.smartLevel"
+        static let incomingEnabled = "mv.incomingEnabled"
+        static let incomingSourceUID = "mv.incomingSourceUID"
+        static let incomingOutputUID = "mv.incomingOutputUID"
     }
 
     public struct DeviceStruct: Identifiable {
@@ -134,7 +229,18 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     // Processing Modules
     private let dspEngine = DeepFilterNetDSP()
     private let voiceChain = VoiceChain()
-    
+
+    // OPTIONAL — created only while the feature is enabled (DeepFilterNetDSP.init allocates
+    // MLMultiArrays + async-loads the model; a stored non-optional instance would pay that at
+    // launch and break zero-cost-when-off). Released to nil on disable.
+    private var incomingEngine: IncomingCleanupEngine?
+
+    // UID lookups: capture is by UID (input scan); monitor persistence is by UID (output scan).
+    // Kept SEPARATE so persistence resolves the monitor output from the correct device set
+    // (AudioObjectIDs are not stable across reboots, so we store + restore by UID).
+    private var incomingSourceUIDByID: [AudioObjectID: String] = [:]
+    private var monitorOutputUIDByID: [AudioObjectID: String] = [:]
+
     public override init() {
         super.init()
         
@@ -180,20 +286,41 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
                 dsp.process(input: data, count: count, output: data)
                 chain.process(data, count: count)
             }
-            
+
+            self?.recordOutputTelemetry(data, count: count)
             return noErr
         }
         
         checkPermissions()
         fetchInputDevices()
         fetchOutputDevices()
+        fetchIncomingDevices()   // HAL input-scope scan surfaces loopback sources (BlackHole/Loopback)
         // Resolve the virtual mic up front so the first capture config is correctly gated: in
         // on-demand mode we must NOT start the real-mic capture until an app uses "NoNoise Mic".
         micDeviceID = deviceID(forUID: VirtualMicRouting.visibleDeviceUID)
         setupCaptureSession()
         setupPlaybackEngine()
         resolveVirtualMicLifecycle()   // arm the in-use listener + sync initial state
+        installHardwareDeviceListener()
         loadSettings()
+        startMeterTimer()
+    }
+
+    deinit {
+        meterTimer?.invalidate()
+        deviceRefreshWorkItem?.cancel()
+        if let block = hardwareDevicesListener {
+            AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject),
+                                                   &hardwareDevicesAddr,
+                                                   DispatchQueue.main,
+                                                   block)
+        }
+        if let block = isRunningSomewhereListener, micDeviceID != 0 {
+            AudioObjectRemovePropertyListenerBlock(micDeviceID,
+                                                   &isRunningSomewhereAddr,
+                                                   DispatchQueue.main,
+                                                   block)
+        }
     }
 
     // MARK: - Presets & suppression knobs
@@ -219,6 +346,7 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     private func applyVoiceChain() {
         var s = selectedPreset.voiceChain
         s.enabled = s.enabled && voicePolishEnabled
+        s.clarity = clarityLevel
         voiceChain.configure(s)
     }
 
@@ -242,6 +370,9 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         d.set(attenuationLimitDb, forKey: PrefKey.atten)
         d.set(outputGainValue, forKey: PrefKey.gain)
         d.set(voicePolishEnabled, forKey: PrefKey.voicePolish)
+        d.set(clarityLevel.rawValue, forKey: PrefKey.clarity)
+        d.set(inputVolumeValue, forKey: PrefKey.inputVolume)
+        d.set(smartLevelEnabled, forKey: PrefKey.smartLevel)
     }
 
     private func loadSettings() {
@@ -262,6 +393,17 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         // Restore the master toggle inside the guard so its didSet doesn't
         // re-persist or reconfigure mid-load (default ON when absent).
         voicePolishEnabled = d.object(forKey: PrefKey.voicePolish) as? Bool ?? true
+        clarityLevel = ClarityLevel(rawValue: d.string(forKey: PrefKey.clarity) ?? "") ?? .off
+        inputVolumeValue = d.object(forKey: PrefKey.inputVolume) != nil
+            ? SmartLevelController.clampInputVolume(d.float(forKey: PrefKey.inputVolume)) : 1.0
+        smartLevelEnabled = d.object(forKey: PrefKey.smartLevel) as? Bool ?? false
+        // Incoming / guest cleanup (off by default; resolve persisted UIDs to live IDs). Restored
+        // inside the isApplyingPreset guard so the didSets don't re-persist/reconfigure mid-load.
+        incomingCleanupEnabled = d.bool(forKey: PrefKey.incomingEnabled)
+        incomingSourceUID = d.string(forKey: PrefKey.incomingSourceUID) ?? ""
+        if let outUID = d.string(forKey: PrefKey.incomingOutputUID), !outUID.isEmpty {
+            incomingOutputDeviceID = deviceID(forUID: outUID)   // translate monitor UID → live ID
+        }
         selectedPreset = preset
         isApplyingPreset = false
         if let p = preset.parameters {  // non-custom: preset defines the values
@@ -273,8 +415,47 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         }
         // Single explicit configure from the final restored state.
         applyVoiceChain()
+        // Create the incoming engine once, only if the feature was persisted enabled (off → no-op).
+        applyIncomingCleanup()
     }
-    
+
+    // MARK: - Incoming / guest cleanup lifecycle
+
+    /// Create-or-tear-down the incoming engine to match the current selections. Off by default —
+    /// the engine object (and thus the second DeepFilterNetDSP's allocations + model load) is
+    /// constructed ONLY when enabled with a valid source, and released to nil otherwise, so a
+    /// disabled feature holds zero ANE/CPU/memory.
+    private func applyIncomingCleanup() {
+        guard incomingCleanupEnabled, !incomingSourceUID.isEmpty else {
+            incomingEngine?.stop()
+            incomingEngine = nil          // release allocations + CoreML model
+            return
+        }
+        // Lazily construct on first enable (DeepFilterNetDSP.init allocates + async-loads here).
+        let engine = incomingEngine ?? IncomingCleanupEngine()
+        incomingEngine = engine
+        engine.start(sourceDeviceUID: incomingSourceUID, monitorDeviceID: incomingOutputDeviceID)
+    }
+
+    private func persistIncomingSettings() {
+        let d = UserDefaults.standard
+        d.set(incomingCleanupEnabled, forKey: PrefKey.incomingEnabled)
+        d.set(incomingSourceUID, forKey: PrefKey.incomingSourceUID)
+        // Persist the MONITOR output by UID, resolved from the MONITOR-output map (the OUTPUT scan)
+        // — NOT the input-source map. AudioObjectIDs are not stable across reboots, so we store the
+        // UID; fall back to a live HAL translate if the map is momentarily stale.
+        let monitorUID = monitorOutputUIDByID[incomingOutputDeviceID]
+            ?? uidForDevice(incomingOutputDeviceID)
+        d.set(monitorUID, forKey: PrefKey.incomingOutputUID)
+    }
+
+    /// Reverse of deviceID(forUID:): read a live device's REAL UID by AudioObjectID. Used as a
+    /// fallback when the cached monitorOutputUIDByID map hasn't been rebuilt yet.
+    private func uidForDevice(_ id: AudioObjectID) -> String {
+        guard id != 0, let info = deviceInfo(for: id) else { return "" }
+        return info.uid
+    }
+
     /// Resolve a device UID to its AudioObjectID via the HAL. Works for INPUT-only devices too
     /// (unlike the output-scoped scan), so it's how we detect the visible "NoNoise Mic".
     private func deviceID(forUID uid: String) -> AudioObjectID {
@@ -291,6 +472,98 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         return translated
     }
 
+    /// Shared HAL reader: name + REAL uid + hidden flag + input/output capability + transport type.
+    /// Extracted so fetchOutputDevices and fetchIncomingDevices read identical metadata (DRY) and
+    /// so the new DeviceInfo fields are populated everywhere the predicate runs.
+    private func deviceInfo(for id: AudioObjectID) -> VirtualMicRouting.DeviceInfo? {
+        // Name.
+        var nameSize = UInt32(MemoryLayout<CFString?>.size)
+        var namePtr: Unmanaged<CFString>?
+        var nameAddr = AudioObjectPropertyAddress(mSelector: kAudioObjectPropertyName,
+                                                  mScope: kAudioObjectPropertyScopeGlobal,
+                                                  mElement: kAudioObjectPropertyElementMain)
+        AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &nameSize, &namePtr)
+        guard let cf = namePtr?.takeRetainedValue() else { return nil }
+        let name = cf as String
+
+        // REAL UID (only a UID translates to an AudioObjectID at runtime).
+        var uidPtr: Unmanaged<CFString>?
+        var uidSize = UInt32(MemoryLayout<CFString?>.size)
+        var uidAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        AudioObjectGetPropertyData(id, &uidAddr, 0, nil, &uidSize, &uidPtr)
+        let realUID = (uidPtr?.takeRetainedValue() as String?) ?? name
+
+        // Hidden flag (absent on most devices; treat absent as not-hidden).
+        var hidden: UInt32 = 0
+        var hiddenSize = UInt32(MemoryLayout<UInt32>.size)
+        var hiddenAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyIsHidden,
+                                                    mScope: kAudioObjectPropertyScopeGlobal,
+                                                    mElement: kAudioObjectPropertyElementMain)
+        if AudioObjectHasProperty(id, &hiddenAddr) {
+            AudioObjectGetPropertyData(id, &hiddenAddr, 0, nil, &hiddenSize, &hidden)
+        }
+
+        // Input / output capability (stream-config size > 0 means the scope has channels).
+        func hasChannels(scope: AudioObjectPropertyScope) -> Bool {
+            var cfgAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
+                                                     mScope: scope, mElement: 0)
+            var cfgSize: UInt32 = 0
+            AudioObjectGetPropertyDataSize(id, &cfgAddr, 0, nil, &cfgSize)
+            return cfgSize > 0
+        }
+        let hasInput = hasChannels(scope: kAudioObjectPropertyScopeInput)
+        let hasOutput = hasChannels(scope: kAudioObjectPropertyScopeOutput)
+
+        // Transport type (FourCharCode → UInt32). Absent → 0 (Unknown).
+        var transport: UInt32 = 0
+        var tSize = UInt32(MemoryLayout<UInt32>.size)
+        var tAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType,
+                                               mScope: kAudioObjectPropertyScopeGlobal,
+                                               mElement: kAudioObjectPropertyElementMain)
+        if AudioObjectHasProperty(id, &tAddr) {
+            AudioObjectGetPropertyData(id, &tAddr, 0, nil, &tSize, &transport)
+        }
+
+        return VirtualMicRouting.DeviceInfo(uid: realUID, name: name, isHidden: hidden != 0,
+                                            hasOutput: hasOutput, hasInput: hasInput,
+                                            transportType: transport)
+    }
+
+    /// Enumerate INPUT-capable devices via the HAL (input scope). Unlike
+    /// AVCaptureDevice.DiscoverySession (used for the mic), this surfaces loopback/aggregate
+    /// devices like BlackHole — exactly the incoming-source candidates.
+    func fetchIncomingDevices() {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
+                                              mScope: kAudioObjectPropertyScopeGlobal,
+                                              mElement: kAudioObjectPropertyElementMain)
+        var dataSize: UInt32 = 0
+        AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &dataSize)
+        let count = Int(dataSize) / MemoryLayout<AudioObjectID>.size
+        var ids = [AudioObjectID](repeating: 0, count: count)
+        AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &dataSize, &ids)
+
+        var sources: [DeviceStruct] = []
+        var uidByID: [AudioObjectID: String] = [:]
+        for id in ids {
+            guard let info = deviceInfo(for: id) else { continue }
+            guard VirtualMicRouting.isSelectableIncomingSource(info) else { continue }
+            sources.append(DeviceStruct(id: id, name: info.name))
+            uidByID[id] = info.uid
+        }
+        DispatchQueue.main.async {
+            self.incomingSourceDevices = sources
+            self.incomingSourceUIDByID = uidByID
+        }
+    }
+
+    /// UID for a picked incoming-source `DeviceStruct.id` (capture is by UID, not AudioObjectID).
+    /// Lets the Settings picker tag rows with the UID that `incomingSourceUID` binds to.
+    public func uid(forIncomingSourceID id: AudioObjectID) -> String {
+        incomingSourceUIDByID[id] ?? ""
+    }
+
     func fetchOutputDevices() {
         var propertyAddress = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
@@ -304,47 +577,31 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &propertyAddress, 0, nil, &dataSize, &deviceIDs)
         
         var newDevs: [DeviceStruct] = []
-        // allDevs/uidToID cover only OUTPUT-capable devices (this block runs under `if size > 0`),
-        // which is exactly the route-target set: the engine is output-capable. The input-only
-        // visible "NoNoise Mic" is intentionally absent here — it's detected by UID translate below.
+        // allDevs/uidToID cover only OUTPUT-capable devices, which is exactly the route-target set:
+        // the engine is output-capable. The input-only visible "NoNoise Mic" is intentionally absent
+        // here — it's detected by UID translate below.
         var allDevs: [VirtualMicRouting.DeviceInfo] = []
         var uidToID: [String: AudioObjectID] = [:]
-        
+        // Monitor outputs for the incoming/guest picker — REAL outputs only (loopback sinks,
+        // aggregates, virtual, hidden, and our engine excluded by isSelectableMonitorOutput). Built
+        // from the SAME output-capable set but kept SEPARATE from outputDevices (the outgoing picker
+        // is filtered with isSelectableOutput and would wrongly include BlackHole as a monitor target).
+        var monitors: [DeviceStruct] = []
+        var monitorUID: [AudioObjectID: String] = [:]
+
         for id in deviceIDs {
-            // Check Output Channels
-            let scope = kAudioObjectPropertyScopeOutput
-            var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration, mScope: scope, mElement: 0)
-            var size: UInt32 = 0
-            AudioObjectGetPropertyDataSize(id, &addr, 0, nil, &size)
-            if size > 0 {
-                var nameSize = UInt32(MemoryLayout<CFString?>.size)
-                var namePtr: Unmanaged<CFString>?
-                var nameAddr = AudioObjectPropertyAddress(mSelector: kAudioObjectPropertyName, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-                AudioObjectGetPropertyData(id, &nameAddr, 0, nil, &nameSize, &namePtr)
-                guard let cf = namePtr?.takeRetainedValue() else { continue }
-                let name = cf as String
-
-                // REAL UID — not the name. Only a UID translates to an AudioObjectID at runtime,
-                // so filling DeviceInfo.uid with the name would silently break auto-route.
-                var uidPtr: Unmanaged<CFString>?
-                var uidSize = UInt32(MemoryLayout<CFString?>.size)
-                var uidAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceUID, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-                AudioObjectGetPropertyData(id, &uidAddr, 0, nil, &uidSize, &uidPtr)
-                let realUID = (uidPtr?.takeRetainedValue() as String?) ?? name
-
-                // Hidden flag (absent on most devices; treat absent as not-hidden).
-                var hidden: UInt32 = 0
-                var hiddenSize = UInt32(MemoryLayout<UInt32>.size)
-                var hiddenAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyIsHidden, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-                if AudioObjectHasProperty(id, &hiddenAddr) {
-                    AudioObjectGetPropertyData(id, &hiddenAddr, 0, nil, &hiddenSize, &hidden)
-                }
-
-                let info = VirtualMicRouting.DeviceInfo(uid: realUID, name: name, isHidden: hidden != 0, hasOutput: true)
+            // Shared HAL read (name/uid/hidden/input+output capability/transport). `hasOutput` now
+            // comes from the reader, so the old inline `if size > 0` output guard becomes `info.hasOutput`.
+            guard let info = deviceInfo(for: id) else { continue }
+            if info.hasOutput {
                 allDevs.append(info)
-                uidToID[realUID] = id
+                uidToID[info.uid] = id
                 if VirtualMicRouting.isSelectableOutput(info) {   // exclude hidden + our engine from the user's picker
-                    newDevs.append(DeviceStruct(id: id, name: name))
+                    newDevs.append(DeviceStruct(id: id, name: info.name))
+                }
+                if VirtualMicRouting.isSelectableMonitorOutput(info) {
+                    monitors.append(DeviceStruct(id: id, name: info.name))
+                    monitorUID[id] = info.uid
                 }
             }
         }
@@ -365,6 +622,8 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         let routeUID = VirtualMicRouting.preferredOutputUID(from: allDevs)   // engine (by UID), else BlackHole, else nil
         DispatchQueue.main.async {
             self.outputDevices = newDevs
+            self.monitorOutputDevices = monitors
+            self.monitorOutputUIDByID = monitorUID
             // The visible "NoNoise Mic" is INPUT-only, so it is NOT in the output-scoped allDevs.
             // Detect install by translating the visible UID directly (translate resolves input-only devices too).
             self.driverInstalled = self.deviceID(forUID: VirtualMicRouting.visibleDeviceUID) != 0
@@ -444,10 +703,16 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         
         DispatchQueue.main.async {
             self.inputDevices = devs
-            if let defaultDev = AVCaptureDevice.default(for: .audio) {
-                 self.selectedInputDeviceID = defaultDev.uniqueID
+            if devs.contains(where: { $0.uniqueID == self.selectedInputDeviceID }) {
+                return
+            }
+            if let defaultDev = AVCaptureDevice.default(for: .audio),
+               devs.contains(where: { $0.uniqueID == defaultDev.uniqueID }) {
+                self.selectedInputDeviceID = defaultDev.uniqueID
             } else if let first = devs.first {
                 self.selectedInputDeviceID = first.uniqueID
+            } else {
+                self.selectedInputDeviceID = ""
             }
         }
     }
@@ -495,12 +760,17 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     /// Resolve the visible "NoNoise Mic" device and, if present, watch when an app starts/stops
     /// using it so we can hold the real mic only then. Safe to call again (re-resolves + re-arms).
     private func resolveVirtualMicLifecycle() {
+        let wasOnDemandMode = onDemandMode
         if let blk = isRunningSomewhereListener, micDeviceID != 0 {
             AudioObjectRemovePropertyListenerBlock(micDeviceID, &isRunningSomewhereAddr, DispatchQueue.main, blk)
             isRunningSomewhereListener = nil
         }
         micDeviceID = deviceID(forUID: VirtualMicRouting.visibleDeviceUID)
-        guard onDemandMode else { return }   // no driver → stay always-on, no listener
+        guard onDemandMode else {
+            virtualMicInUse = false
+            if wasOnDemandMode { startCapture() }
+            return
+        }   // no driver → stay always-on, no listener
         let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
             self?.refreshVirtualMicUsage()
         }
@@ -517,9 +787,35 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         var addr = isRunningSomewhereAddr
         AudioObjectGetPropertyData(micDeviceID, &addr, 0, nil, &size, &val)
         let inUse = val != 0
-        guard inUse != virtualMicInUse else { return }
         virtualMicInUse = inUse
         if inUse { startCapture() } else { stopCapture() }
+    }
+
+    private func installHardwareDeviceListener() {
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            self?.scheduleDeviceRefresh()
+        }
+        hardwareDevicesListener = block
+        AudioObjectAddPropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject),
+                                            &hardwareDevicesAddr,
+                                            DispatchQueue.main,
+                                            block)
+    }
+
+    private func scheduleDeviceRefresh() {
+        deviceRefreshWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.refreshDevicesAfterHardwareChange()
+        }
+        deviceRefreshWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: item)
+    }
+
+    private func refreshDevicesAfterHardwareChange() {
+        fetchInputDevices()
+        fetchOutputDevices()
+        fetchIncomingDevices()   // refresh loopback sources when BlackHole/Loopback is added/removed
+        resolveVirtualMicLifecycle()
     }
 
     private func startCapture() {
@@ -530,6 +826,118 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     private func stopCapture() {
         guard captureSession.isRunning else { return }
         DispatchQueue.global(qos: .userInitiated).async { self.captureSession.stopRunning() }
+    }
+
+    // MARK: - Input Volume, telemetry & Smart Level
+
+    private func setInputVolume(_ volume: Float) {
+        inputVolumeValue = SmartLevelController.clampInputVolume(volume)
+    }
+
+    /// Programmatic output-gain change for Smart Level — must not flip the active preset to `.custom`.
+    private func setOutputGainForSmartLevel(_ gain: Float) {
+        isApplyingPreset = true
+        outputGainValue = gain
+        isApplyingPreset = false
+        persistSettings()
+    }
+
+    private func startMeterTimer() {
+        meterTimer?.invalidate()
+        meterTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
+            self?.publishMeterTelemetry()
+        }
+    }
+
+    private func publishMeterTelemetry() {
+        let rawPeak = tRawInputPeak
+        let trimmedPeak = tTrimmedInputPeak
+        let outPeak = tOutputPeak
+        let outputClipCount = tOutputClipCount
+        let inputDecision = SmartLevelController.evaluateInputGuard(
+            telemetry: SmartLevelController.InputTelemetry(
+                rawPeak: rawPeak,
+                trimmedPeak: trimmedPeak,
+                trimmedRMS: tInputLevel,
+                rawClipSamples: Int(tRawInputClipCount),
+                trimmedHotSamples: Int(tTrimmedInputHotCount)),
+            currentHotTicks: consecutiveTrimmedHotTicks,
+            currentInputVolume: inputVolumeValue,
+            smartLevelEnabled: smartLevelEnabled)
+
+        inputLevel = inputDecision.inputLevel
+        rawInputPeak = rawPeak
+        trimmedInputPeak = trimmedPeak
+        outputPeak = outPeak
+        isInputNearCeiling = inputDecision.isInputNearCeiling
+        isOutputClipping = SmartLevelController.isClipping(outPeak) || outputClipCount > 0
+        isSourceMicClipping = inputDecision.isSourceMicClipping
+
+        consecutiveTrimmedHotTicks = inputDecision.consecutiveTrimmedHotTicks
+        let outputWasClipping = SmartLevelController.isClipping(outPeak) || outputClipCount > 0
+        consecutiveOutputClipTicks = SmartLevelController.advanceHotTicks(
+            current: consecutiveOutputClipTicks, wasHot: outputWasClipping)
+
+        tInputLevel = 0
+        tRawInputPeak = 0
+        tTrimmedInputPeak = 0
+        tOutputPeak = 0
+        tOutputClipCount = 0
+        tRawInputClipCount = 0
+        tTrimmedInputHotCount = 0
+
+        updateSmartLevel()
+    }
+
+    private func updateSmartLevel() {
+        guard smartLevelEnabled else { return }
+        let now = Date()
+        if let last = lastSmartLevelAdjustTime, now.timeIntervalSince(last) < 0.4 { return }
+
+        if isSourceMicClipping {
+            smartLevelMessage = "Source mic is clipping before NoNoise. Lower macOS/device input volume if available."
+        }
+
+        if let next = SmartLevelController.nextInputVolume(
+            current: inputVolumeValue, hotTicks: consecutiveTrimmedHotTicks, enabled: smartLevelEnabled) {
+            setInputVolume(next)
+            consecutiveTrimmedHotTicks = 0
+            lastSmartLevelAdjustTime = now
+            smartLevelMessage = "Smart Level reduced Input Volume to \(Int(next * 100))%."
+            return
+        }
+
+        if let next = SmartLevelController.nextOutputGain(
+            current: outputGainValue, outputClipTicks: consecutiveOutputClipTicks,
+            inputHotTicks: consecutiveTrimmedHotTicks, enabled: smartLevelEnabled) {
+            setOutputGainForSmartLevel(next)
+            consecutiveOutputClipTicks = 0
+            lastSmartLevelAdjustTime = now
+            smartLevelMessage = "Smart Level reduced Output Gain to \(Int(next * 100))%."
+        } else if !isInputNearCeiling && !isOutputClipping && !isSourceMicClipping {
+            smartLevelMessage = nil
+        }
+    }
+
+    private func recordInputTelemetry(rawPeak: Float, trimmedPeak: Float, rms: Float,
+                                    rawClipSamples: Int, trimmedHotSamples: Int) {
+        tInputLevel = max(tInputLevel, rms)
+        tRawInputPeak = SmartLevelController.latchPeak(existing: tRawInputPeak, bufferPeak: rawPeak)
+        tTrimmedInputPeak = SmartLevelController.latchPeak(existing: tTrimmedInputPeak, bufferPeak: trimmedPeak)
+        if rawClipSamples > 0 { tRawInputClipCount &+= Int32(rawClipSamples) }
+        if trimmedHotSamples > 0 { tTrimmedInputHotCount &+= Int32(trimmedHotSamples) }
+    }
+
+    private func recordOutputTelemetry(_ data: UnsafePointer<Float>, count: Int) {
+        var peak = tOutputPeak
+        var clipCount = tOutputClipCount
+        for i in 0..<count {
+            let mag = abs(data[i])
+            peak = max(peak, mag)
+            if mag >= SmartLevelController.clipThreshold { clipCount &+= 1 }
+        }
+        tOutputPeak = peak
+        tOutputClipCount = clipCount
     }
 
     
@@ -610,18 +1018,14 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         let convertedFrames = Int(outputBuffer.frameLength)
         
         if convertedFrames > 0, let floatData = outputBuffer.floatChannelData?[0] {
-             // Metering (RMS)
-             var sum: Float = 0
-             // Sample every 4th visual
-             for i in stride(from: 0, to: min(convertedFrames, 256), by: 4) {
-                 sum += floatData[i] * floatData[i]
-             }
-             if convertedFrames > 0 {
-                 let rms = sqrt(sum / Float(min(convertedFrames, 256)/4 + 1))
-                 DispatchQueue.main.async { self.inputLevel = rms }
-             }
-             
-             // Push 48k Float32 to RingBuffer
+             let telemetry = SmartLevelController.applyInputVolumeAndMeasure(
+                floatData, count: convertedFrames, volume: realtimeInputVolume)
+             recordInputTelemetry(rawPeak: telemetry.rawPeak,
+                                  trimmedPeak: telemetry.trimmedPeak,
+                                  rms: telemetry.trimmedRMS,
+                                  rawClipSamples: telemetry.rawClipSamples,
+                                  trimmedHotSamples: telemetry.trimmedHotSamples)
+
              _ = self.ringBuffer.write(floatData, count: convertedFrames)
         }
     }

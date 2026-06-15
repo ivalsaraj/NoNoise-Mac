@@ -61,3 +61,48 @@ public struct Limiter {
         return max(-ceilingLin, min(ceilingLin, y))                 // safety clamp == hard ceiling
     }
 }
+
+/// Subtractive split-band de-esser. Isolates the sibilant band with a high-pass,
+/// follows its envelope, and removes a fraction of that band when it exceeds
+/// threshold: `out = x - frac·sib`. Below threshold (and when disabled) `frac = 0`,
+/// so output == input **exactly** — it never colors the voice except on real
+/// "ess"/"sh" transients, and it never touches the low/mid vocal body.
+public struct DeEsser {
+    private var sib = Biquad()           // high-pass isolating the sibilant band
+    private var enabled = false
+    private var thresholdLin: Float = 1  // detector threshold (linear)
+    private var maxReduction: Float = 0  // max fraction of the sib band to remove (0…1)
+    private var attackCoeff: Float = 0
+    private var releaseCoeff: Float = 0
+    private var env: Float = 0           // smoothed |sib| envelope (linear)
+
+    public init() {}
+
+    public mutating func configure(crossoverHz: Float, thresholdDb: Float, maxReductionDb: Float,
+                                   attackMs: Float, releaseMs: Float, sampleRate: Float, enabled: Bool) {
+        self.enabled = enabled
+        guard enabled else { sib.setBypass(); env = 0; return }
+        sib.setHighPass(freq: crossoverHz, sampleRate: sampleRate, q: 0.707)
+        thresholdLin = powf(10, thresholdDb / 20)
+        // Convert "max dB to pull the band down" into a max removed-fraction, so
+        // out = x - frac·sib reduces the band by at most maxReductionDb and never inverts it.
+        maxReduction = min(1, 1 - powf(10, -abs(maxReductionDb) / 20))
+        attackCoeff = expf(-1.0 / (max(attackMs, 0.01) * 0.001 * sampleRate))
+        releaseCoeff = expf(-1.0 / (max(releaseMs, 0.01) * 0.001 * sampleRate))
+    }
+
+    public mutating func reset() { env = 0; sib.reset() }
+
+    @inline(__always)
+    public mutating func process(_ x: Float) -> Float {
+        guard enabled else { return x }
+        let s = sib.process(x)                 // sibilant band (state advances every sample)
+        let mag = abs(s)
+        let coeff = mag > env ? attackCoeff : releaseCoeff
+        env = coeff * env + (1 - coeff) * mag
+        guard env > thresholdLin else { return x }   // below threshold → exact identity
+        let over = env / thresholdLin                // > 1 here
+        let frac = maxReduction * (1 - 1 / over)      // 0 at threshold → maxReduction when loud
+        return x - frac * s                           // remove only the sibilant band
+    }
+}

@@ -31,7 +31,9 @@ struct GeneralSettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 brandedHeader
                 suppressionCard
+                inputVolumeCard
                 gainCard
+                incomingCard
                 footer
             }
             .padding(.trailing, 2)
@@ -102,6 +104,84 @@ struct GeneralSettingsView: View {
                 }
             }
             .toggleStyle(.switch)
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Broadcast Voice").font(.subheadline)
+                Picker("", selection: $audioModel.clarityLevel) {
+                    ForEach(ClarityLevel.allCases) { level in
+                        Text(level.label).tag(level)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                Text("Adds studio presence and clarity while keeping your natural voice — sibilance is tamed automatically, so “crisp” never turns harsh.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .nnCard()
+    }
+
+    // MARK: Input volume & Smart Level
+
+    private var inputVolumeCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                sectionHeader("Input Volume", systemImage: "mic.fill")
+                Spacer()
+                Text("\(Int(audioModel.inputVolumeValue * 100))%")
+                    .font(.callout)
+                    .monospacedDigit()
+                    .foregroundColor(.secondary)
+            }
+
+            HStack(spacing: 10) {
+                Image(systemName: "mic.fill").foregroundColor(.secondary).font(.caption)
+                Slider(value: $audioModel.inputVolumeValue, in: 0.25...1.0).tint(.accentColor)
+                Image(systemName: "mic.fill").foregroundColor(.secondary).font(.caption)
+            }
+
+            Text("Lowers your mic before NoNoise processing. Use this if your voice sounds clipped, crushed, or too loud even when speaking normally.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            HStack {
+                Spacer()
+                Button("Reset to 100%") {
+                    withAnimation { audioModel.inputVolumeValue = 1.0 }
+                }
+                .controlSize(.small)
+            }
+
+            if audioModel.isSourceMicClipping {
+                Label("Source mic is clipping before NoNoise. Lower macOS/device input volume if available.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+            }
+            if audioModel.isInputNearCeiling {
+                Label("Input too loud", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+            }
+
+            Divider()
+
+            Toggle(isOn: $audioModel.smartLevelEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Smart Level").font(.subheadline)
+                    Text("Automatically lowers Input Volume or Output Gain when your voice repeatedly hits the ceiling.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+
+            if let msg = audioModel.smartLevelMessage {
+                Text(msg).font(.caption).foregroundColor(.secondary)
+            }
         }
         .nnCard()
     }
@@ -129,12 +209,63 @@ struct GeneralSettingsView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
 
+            if audioModel.isOutputClipping {
+                Label("Output clipping", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+            }
+
             HStack {
                 Spacer()
                 Button("Reset to 100%") {
                     withAnimation { audioModel.outputGainValue = 1.0 }
                 }
                 .controlSize(.small)
+            }
+        }
+        .nnCard()
+    }
+
+    // MARK: Clean Incoming / Guest
+
+    private var incomingCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            sectionHeader("Clean Incoming / Guest", systemImage: "person.wave.2.fill")
+
+            Toggle(isOn: $audioModel.incomingCleanupEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Clean the other side").font(.subheadline)
+                    Text("De-noise the guest/caller you hear. Route the call app's speaker into a loopback device (e.g. BlackHole), then pick it below.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+
+            if audioModel.incomingCleanupEnabled {
+                HStack(spacing: 10) {
+                    Text("Incoming from").font(.subheadline).frame(width: 110, alignment: .leading)
+                    Picker("", selection: $audioModel.incomingSourceUID) {
+                        Text("Select…").tag("")
+                        ForEach(audioModel.incomingSourceDevices) { dev in
+                            Text(dev.name).tag(audioModel.uid(forIncomingSourceID: dev.id))
+                        }
+                    }
+                    .labelsHidden().frame(maxWidth: .infinity)
+                }
+                HStack(spacing: 10) {
+                    Text("Hear on").font(.subheadline).frame(width: 110, alignment: .leading)
+                    Picker("", selection: $audioModel.incomingOutputDeviceID) {
+                        ForEach(audioModel.monitorOutputDevices) { dev in
+                            Text(dev.name).tag(dev.id)
+                        }
+                    }
+                    .labelsHidden().frame(maxWidth: .infinity)
+                }
+                if audioModel.incomingSourceDevices.isEmpty {
+                    Label("No loopback device found. Install BlackHole or Loopback and set your call app's speaker to it.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption).foregroundColor(.orange)
+                }
             }
         }
         .nnCard()
@@ -147,6 +278,10 @@ struct GeneralSettingsView: View {
                 .font(.caption2)
                 .foregroundColor(.secondary)
             Spacer()
+            Link(destination: SupportLinks.reportIssueOrFeature) {
+                Label("Report a feature or issue", systemImage: "exclamationmark.bubble")
+            }
+            .controlSize(.small)
         }
         .padding(.top, 2)
     }
@@ -200,6 +335,12 @@ struct GuideView: View {
                 Divider()
                 StepRow(number: 4, title: "You're Live",
                         description: "Noise cancellation is ON by default. Toggle it any time from the menu bar. Your voice is now crystal clear!")
+                Divider()
+                StepRow(number: 5, title: "Clean the Guest (optional)",
+                        description: "To de-noise the person you HEAR: set the call app's SPEAKER/OUTPUT to a loopback device (BlackHole 2ch or Loopback). In NoNoise Mac Settings → Clean Incoming/Guest, pick that loopback as ‘Incoming from’ and your real speakers/headphones as ‘Hear on’.")
+                Divider()
+                StepRow(number: 6, title: "Still Want to Hear Raw Audio?",
+                        description: "Routing the call app into a loopback means its sound no longer reaches your speakers directly. NoNoise Mac re-plays the CLEANED audio to your chosen output, so you still hear the call — just de-noised. For raw monitoring too, use a macOS Multi-Output Device that includes both the loopback and your speakers.")
 
                 HStack {
                     Spacer()

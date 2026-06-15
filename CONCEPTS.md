@@ -18,6 +18,17 @@ docs, and reviews.
 - **Render thread** — the real-time AVAudioEngine callback. Allocation-free; scalar/vDSP
   math only. See `AGENTS.md` → Real-time audio rules.
 
+## Incoming / guest cleanup
+- **Incoming / guest cleanup** — the mirror of mic cleaning: capture the call app's
+  output from a loopback/aggregate **INPUT** device, clean it with a SECOND DeepFilterNet
+  stream (`IncomingCleanupEngine`), and play it to the user's speakers (Phase 1) and/or a
+  second virtual sink for recording (Phase 2). Independent of the outgoing mic — its own
+  capture session, engine, ring buffer, and DSP state.
+- **Loopback source** — a device (BlackHole / Loopback / aggregate) the user points the call
+  app's speaker at, so its audio becomes a capturable **INPUT**. macOS has no built-in app
+  loopback, so this routing step is required.
+- **Monitor output** — the real speakers / headphones the cleaned guest audio is played to.
+
 ## DSP / DeepFilterNet
 - **DeepFilterNet3 (DFN)** — the noise-suppression neural model (stock), run via CoreML on
   the Neural Engine/GPU (`computeUnits = .all`).
@@ -41,6 +52,13 @@ docs, and reviews.
 ## Voice polish (Tier 2)
 - **Voice Polish / VoiceChain** — post-DSP shaping: high-pass → low-shelf → high-shelf →
   compressor → limiter. Off in Meeting; on in Podcast/Tutorial/Custom.
+- **Clarity / Broadcast Voice** — an optional, mode-independent enhancement
+  (`ClarityLevel`: off/low/medium/high) layered on the voice chain. Couples a
+  **presence** lift with a **de-esser** so "crisp" never becomes harsh.
+- **Presence** — a wide-Q peaking biquad (~4.5 kHz) that lifts intelligibility.
+  Unity gain at DC/Nyquist, so the vocal body/identity is untouched.
+- **De-esser** — a subtractive split-band sibilance controller
+  (`out = x − frac·sib`). Identity at rest; only acts on loud sibilant transients.
 - **Biquad** — RBJ-cookbook second-order IIR filter (TDF-II).
 - **Compressor** — log-domain feed-forward dynamics (threshold/ratio/attack/release/makeup).
 - **Limiter** — fast peak limiter + hard clamp; the final overflow guard (ceiling dB).

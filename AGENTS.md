@@ -26,7 +26,8 @@ cable so any app (Zoom, Meet, Discord, OBS, …) receives studio-clean audio.
   - `AudioModel` — CoreAudio/AVFoundation capture + playback, ring buffer, render callback, preset/knob state + persistence.
   - `AudioProcessing/DeepFilterNetDSP` — STFT → DeepFilterNet feature pipeline → CoreML call → ISTFT → wet/dry blend.
   - `AudioProcessing/DeepFilterNet3_Streaming` — generated CoreML model wrapper.
-  - `AudioProcessing/VoiceChain` + `Biquad` + `Dynamics` — post-DSP "voice polish" (high-pass → shelves → compressor → limiter).
+  - `AudioProcessing/VoiceChain` + `Biquad` + `Dynamics` — post-DSP "voice polish" (high-pass → shelves → compressor → limiter) plus the optional **Broadcast Voice** clarity stages (presence peaking bell → subtractive `DeEsser`), driven by `ClarityLevel` and gated independently of the noise preset.
+  - `AudioProcessing/IncomingCleanupEngine` — a SECOND, independent capture→clean→play pipeline ("clean the other side"). Captures a loopback/aggregate **INPUT** device, runs its OWN `DeepFilterNetDSP` instance (DFN only — **no** `VoiceChain`), plays to the user's monitor output. NOT an `AudioModel` (no mic coupling, no auto-route to the NoNoise Mic sink). Held by `AudioModel` as an OPTIONAL (`IncomingCleanupEngine?`) and created ONLY while enabled. See "Incoming / guest cleanup" below.
   - `AudioProcessing/RingBuffer`, `SpecHistoryRingBuffer`, `AudioUtils` — buffers + helpers.
   - `VoicePreset` — preset → DSP params + voice-chain settings (single source of truth).
 - `Sources/App` — SwiftUI menu-bar app: `NoNoiseMacApp`, `ContentView` (popover), `SettingsView`.
@@ -51,6 +52,20 @@ Release installs MUST build with `--arch arm64`; NoNoise Mac is Apple-Silicon-on
 builds are the optimized path for M-series chips.
 The app is a menu-bar utility (`LSUIElement`); **AI noise cancellation is ON by default**
 (`AudioModel.isAIEnabled = true`).
+
+## Apple Silicon performance mandate
+NoNoise Mac is an always-available menu-bar audio utility for M-series Macs. Every implementation
+decision MUST preserve that feel: low CPU, low memory churn, low latency, and no avoidable battery
+drain. Optimize for Apple Silicon first (`arm64`, CoreML/Metal/Accelerate where appropriate), and
+write high-performance code by default. Never introduce work that can noticeably slow down the
+user's Mac, pin the CPU/GPU, allocate in hot paths, poll unnecessarily, or keep hardware active
+without a measured reason.
+
+Performance does not outrank correctness, privacy, or audio quality. If a faster approach would
+reduce output quality, weaken privacy, or make behavior harder to reason about, do not take it.
+Instead, keep the quality bar and find a measured, maintainable optimization. Any non-trivial
+performance-sensitive change should be verified with the closest available signal: tests,
+Instruments/profiling, allocation checks, or an explicit before/after explanation.
 
 ## CI & releases
 `.github/workflows/ci.yml` runs on pushes to `main` and pull requests targeting `main`; it only
@@ -125,11 +140,18 @@ Do not add entitlements beyond these two without a measured, documented need.
 - Preset + knob state persists in `UserDefaults` under `mv.*` keys; first launch defaults to the Meeting preset (= pre-preset full-suppression behavior). `AudioModel` itself is not unit-tested (its `init()` starts CoreAudio/AVFoundation) — the pure logic is unit-tested and the orchestration is smoke-tested.
 
 ## Voice polish chain (Tier 2)
-- `VoiceChain` (Core/AudioProcessing) runs AFTER `DeepFilterNetDSP` on the time-domain output, inside `AudioModel`'s render callback, only when `isAIEnabled`. Order: high-pass → low-shelf → high-shelf → compressor → limiter. The Limiter is last and hard-clamps to the ceiling — it is the final overflow guard.
+- `VoiceChain` (Core/AudioProcessing) runs AFTER `DeepFilterNetDSP` on the time-domain output, inside `AudioModel`'s render callback, only when `isAIEnabled`. Order: high-pass → low-shelf → high-shelf → **presence (peaking bell) → de-esser** → compressor → limiter. The Limiter is last and hard-clamps to the ceiling — it is the final overflow guard.
 - Built from pure, unit-tested value types: `Biquad` (RBJ cookbook coefficients, TDF-II), `Compressor` (log-domain feed-forward), `Limiter` (fast peak + hard clamp). Keep all DSP math here, testable, with no CoreML dependency.
-- **Real-time rule**: `VoiceChain.process` is allocation-free and per-sample; `configure(_:)` (coefficient recompute) runs on main only. State (`Biquad.z1/z2`, `Compressor.envDb`, `Limiter.gain`) carries across render buffers — never reset per buffer. `configure` resets state ONLY on the disabled→enabled transition (clean start); enabled→enabled preset switches are intentionally bumpless.
-- Chain params are a pure function of `VoicePreset.voiceChain` (NOT persisted per-stage). Effective enabled = `voicePolishEnabled && preset.voiceChain.enabled`. Meeting = off; Podcast/Tutorial/Custom = on. Only the `mv.voicePolish` master toggle is persisted (plus the Tier 1 `mv.preset`).
+- **Real-time rule**: `VoiceChain.process` is allocation-free and per-sample; `configure(_:)` (coefficient recompute) runs on main only. State (`Biquad.z1/z2` for the high-pass, shelves, and the `presence` bell; `Compressor.envDb`; `Limiter.gain`; and the `DeEsser`'s detector envelope + high-pass state) carries across render buffers — never reset per buffer. `configure` resets state in exactly two cases: a FULL reset on the inactive→active transition (clean start), and a clarity-stages-only reset (`presence` + `DeEsser`) when `ClarityLevel` changes while the chain stays active. Active→active switches with unchanged clarity are intentionally bumpless.
+- Chain params are a pure function of `VoicePreset.voiceChain` (NOT persisted per-stage) plus the orthogonal **Broadcast Voice** `ClarityLevel`. The chain runs when `(voicePolishEnabled && preset.voiceChain.enabled) || clarity != .off`. Meeting polish = off; Podcast/Tutorial/Custom = on; Broadcast Voice (presence + de-esser) layers on any mode. Persisted: `mv.voicePolish`, `mv.clarity` (plus the Tier 1 `mv.preset`). `configure` resets ALL stage state on inactive→active, and resets ONLY the clarity stages when `clarity` changes while the chain stays active (bumpless otherwise).
 - `applyVoiceChain()` reconfigures the chain on every preset transition (explicit pick AND the auto-flip to Custom) and on toggle/load — never from the per-tick knob path more than once per transition. `voicePolishEnabled.didSet` is guarded by `!isApplyingPreset` exactly like the Tier 1 knobs.
+
+## Input Volume & Smart Level (hot-mic guard)
+- **Input Volume** is an app-level pre-DSP trim (`inputVolumeValue`, persisted `mv.inputVolume`, range 25%…100%, default 100%). Applied in `captureOutput(...)` after 48 kHz conversion and **before** `ringBuffer.write`. Does **not** write macOS hardware input volume.
+- **Runtime scalar:** capture/render paths read `realtimeInputVolume` (mirrored from `inputVolumeValue` in `didSet`), never the `@Published` wrapper directly.
+- **Telemetry:** scalar peaks written on capture/render threads (`tRawInputPeak`, `tTrimmedInputPeak`, `tOutputPeak`, clip/hot counters); a ~25 Hz main `Timer` snapshots them into `@Published` state and runs Smart Level. The visible input meter is trimmed NoNoise input RMS, while raw peak remains a source-clipping warning. No `DispatchQueue.main.async` from audio paths for metering.
+- **Smart Level** (`smartLevelEnabled`, `mv.smartLevel`) is protective only — gradually reduces Input Volume when trimmed input is repeatedly near ceiling (≥0.98), or Output Gain when output clips but input is not hot. Never auto-boosts. Floor: 25% input / 25% output gain. Logic lives in `SmartLevelController` (unit-tested); orchestration in `AudioModel.updateSmartLevel()`.
+- **Warnings:** raw input peak before trim detects source/ADC clipping that software trim cannot repair; trimmed peak drives "Input too loud" and Smart Level input decisions.
 
 ## NoNoise Mic virtual driver (Tier 3, Spec A) — `Driver/`
 - **What:** a userspace CoreAudio **AudioServerPlugIn** (`Driver/NoNoiseMic/NoNoiseMic.c`) that publishes a **visible input-only** device "NoNoise Mic" + a **hidden output-only** device "NoNoise Mic Engine". The app renders cleaned audio to the engine device; consumer apps pick "NoNoise Mic" as their microphone. Phase A1 = in-driver **loopback**; Phase A2 (gated) adds an XPC/shared-memory path.
@@ -143,3 +165,12 @@ Do not add entitlements beyond these two without a measured, documented need.
 - **Licensing:** original implementation against the public API (MIT) — NOT Apple sample source, NOT derived from BlackHole (GPL-3.0).
 - **App-side routing (`AudioModel.fetchOutputDevices`):** auto-routes the engine's output to the hidden "NoNoise Mic Engine" via `VirtualMicRouting.preferredOutputUID` (engine → BlackHole fallback → else leave unset; never auto-route to a physical output). Devices are matched by **real UID** (`kAudioDevicePropertyDeviceUID`), not name — only a UID translates to an `AudioObjectID`. **The hidden engine (`kAudioDevicePropertyIsHidden=1`) is EXCLUDED from `kAudioHardwarePropertyDevices` enumeration**, so it must be resolved by UID translate (`kAudioHardwarePropertyTranslateUIDToDevice`) and injected into the route set — the enumeration loop will never see it. (Same translate path resolves `driverInstalled` from the input-only visible mic.) The engine + any hidden device are filtered from the app's own pickers via `isSelectableOutput`, and "NoNoise Mic" is filtered from the input list to prevent a loopback echo.
 - **On-demand capture (`AudioModel`, Krisp-like):** when the driver is installed, the app holds the **real mic** (and the macOS orange indicator) ONLY while some app is actually using "NoNoise Mic" — observed via a `kAudioDevicePropertyDeviceIsRunningSomewhere` listener on the visible mic. The render engine to the hidden sink stays warm; only the `AVCaptureSession` is gated. Without the driver (BlackHole fallback) there's no per-use signal, so capture stays always-on.
+
+## Incoming / guest cleanup (clean the other side) — `IncomingCleanupEngine`
+- **What:** a SECOND, independent capture→clean→play pipeline that de-noises the audio the user *hears* (a noisy guest/caller). It owns its own `AVCaptureSession`, `AVAudioEngine`, `RingBuffer`, and `DeepFilterNetDSP`. It is **not** an `AudioModel` and never touches the mic path or the NoNoise Mic sink.
+- **Off by default + lazy lifecycle (zero-cost when off):** `AudioModel` holds it as `IncomingCleanupEngine?` (OPTIONAL, never a stored `let`). `applyIncomingCleanup()` CREATES it on the enabled transition and tears it down to `nil` when disabled. Rationale: `DeepFilterNetDSP.init()` allocates ML buffers + async-loads the CoreML model — it must NOT run at launch. Each fresh engine instance therefore gets its OWN DeepFilterNet recurrent state (correct — a new stream starts clean).
+- **DFN-only:** the incoming path runs DeepFilterNet **only** — no `VoiceChain`/Broadcast Voice (that polish is voice-shaping for the *outgoing* mic, inappropriate for arbitrary guest audio).
+- **Source enumeration is INPUT-scope (`fetchIncomingDevices`):** HAL enumeration on the input scope. The selectable-source predicate `VirtualMicRouting.isSelectableIncomingSource` REJECTS physical mics — it keys off `DeviceInfo.transportType` (virtual/aggregate) + `hasInput`, so only loopback/aggregate inputs (BlackHole, Loopback, etc.) qualify. Physical mics are intentionally excluded.
+- **Monitor output is OUTPUT-scope:** the "Hear on" device list comes from the output scan (`fetchOutputDevices` → `isSelectableMonitorOutput`) and its UID is persisted from `monitorOutputUIDByID` (the OUTPUT map) — **never** from the input-source map. Mixing the two maps would persist the wrong device.
+- **Capture by UID (proven):** capture resolves the source via `AVCaptureDevice(uniqueID:)` from the device's real `kAudioDevicePropertyDeviceUID`. The Task-S spike PROVED HAL→`AVCaptureDevice(uniqueID:)` resolution + session attach for BlackHole; live sample-buffer delivery is gated only by on-device TCC (mic permission), not by the design.
+- **Persistence:** keys are `mv.incomingEnabled` / `mv.incomingSourceUID` / `mv.incomingOutputUID` (source persisted by UID string; monitor persisted as UID then translated back to a live `AudioObjectID` on load). Re-applied via `applyIncomingCleanup()` after `loadSettings()`.

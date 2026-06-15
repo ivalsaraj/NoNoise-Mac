@@ -2,10 +2,83 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Hot mic ceiling fix
+- Input metering now reflects the trimmed NoNoise input signal instead of raw pre-trim RMS, so
+  lowering Input Volume visibly lowers the meter while raw mic clipping still shows a separate
+  source-warning state.
+- Tutorial mode no longer adds hidden loudness by default: output gain is unity and compressor
+  makeup is zero. Smart Level can now protect down to the manual 25% Input Volume floor.
+
+### 2026-06-15 — Clean Incoming / Guest (Phase 1) shipped
+- Added `IncomingCleanupEngine` — a SECOND, independent capture→clean→play pipeline that
+  de-noises the audio the user *hears* (a noisy guest/caller). Captures a loopback/aggregate
+  **INPUT** (BlackHole/Loopback) via `AVCaptureDevice(uniqueID:)`, runs its OWN `DeepFilterNetDSP`
+  (DFN only, no Voice polish), and re-plays the cleaned audio to the chosen monitor output.
+- `AudioModel` owns it as an OPTIONAL, created on the enabled transition and torn down to `nil`
+  when off (off by default; the second AI stream only runs while enabled). New persisted keys
+  `mv.incomingEnabled` / `mv.incomingSourceUID` / `mv.incomingOutputUID`.
+- Source list enumerated on the INPUT scope (`fetchIncomingDevices`) with
+  `VirtualMicRouting.isSelectableIncomingSource` (rejects physical mics via transport type +
+  `hasInput`); monitor list comes from the OUTPUT scan (`isSelectableMonitorOutput`).
+- UI: a **Clean Incoming / Guest** card in Settings (enable + *Incoming from* / *Hear on* pickers
+  + no-loopback warning), a compact toggle in the popover, and two new Setup Guide steps for the
+  loopback routing.
+- **Spike (Task S):** proved HAL enumeration surfaces BlackHole (UID + virtual transport) and that
+  `AVCaptureDevice(uniqueID:)` resolves that UID and attaches to an `AVCaptureSession`. Live
+  sample-buffer delivery is gated only by on-device TCC (mic permission), not by the design — so
+  the AVCapture-by-UID path is sound. 14 device-classification unit tests added.
+
+### 2026-06-15 — GitHub report action added
+- Added a compact **Report** action to the menu-bar popover footer and a matching
+  **Report a feature or issue** link in Settings. Both open the NoNoise Mac GitHub issue template
+  chooser through a shared app support URL constant.
+- Arranged the popover device rows horizontally, with each label beside its picker/status and the
+  Output route on the next row.
+
+### 2026-06-15 — Input Volume & Smart Level shipped
+- Added app-level **Input Volume** (25%…100%, default 100%, `mv.inputVolume`) applied pre-ring-buffer
+  in `AudioModel.captureOutput`, plus optional **Smart Level** (`mv.smartLevel`) that gradually lowers
+  Input Volume or Output Gain when sample peaks repeatedly approach the ceiling.
+- Cheap scalar peak/clip telemetry on capture/render threads; ~25 Hz main timer publishes warnings
+  (`Input too loud`, `Output clipping`, source-mic clipping) and runs Smart Level via the pure
+  `SmartLevelController` helper. UI in Settings and popover status card.
+
+### 2026-06-15 — Input Volume & Smart Level plan
+- Added `docs/plans/2026-06-15-input-volume-smart-level.md`, a focused plan for hot-mic protection:
+  a macOS-worded **Input Volume** control applied pre-DSP, cheap input/output sample-peak detection,
+  and an optional **Smart Level** mode that gradually reduces Input Volume or Output Gain when the
+  voice repeatedly approaches the ceiling.
+
+### 2026-06-15 — Broadcast Voice (clarity) added
+- Added an Off/Low/Medium/High **Broadcast Voice** control: a wide-Q presence peaking bell
+  (`Biquad.setPeaking`) + a subtractive split-band `DeEsser` (`Dynamics.swift`), wired into
+  `VoiceChain` via `ClarityLevel` on `VoiceChainSettings` and injected by
+  `AudioModel.applyVoiceChain()` on top of the active preset (persisted under `mv.clarity`).
+- UI: a segmented picker in Settings and in the menu-bar popover.
+- Design constraint — preserve the original voice — enforced structurally: the de-esser is an
+  identity below threshold, the presence bell has unity gain at DC **and Nyquist** (both proven by
+  test in `BroadcastVoiceTests`), and `clarity == .off` leaves existing presets byte-for-byte unchanged.
+
+### 2026-06-15 — Live input-device refresh
+- Added a CoreAudio hardware-device listener in `AudioModel` so newly plugged microphones refresh
+  into the NoNoise Mac input picker without relaunching the app. Refreshes are debounced, preserve
+  the selected mic when it is still connected, and re-resolve the NoNoise Mic lifecycle when the
+  virtual driver appears or disappears.
+
+### 2026-06-15 — Single brand logo in popover
+- Kept the NoNoise PNG as the popover header logo, and changed the Noise Cancellation status-card
+  badge back to a semantic SF Symbol so the widget does not show duplicate brand marks.
+
 ### 2026-06-15 — Stable release after successful main CI
 - Updated `.github/workflows/release.yml` so a successful `CI` workflow on `main` automatically
   rebuilds, bundles, and uploads the latest `NoNoiseMac.app`, `NoNoiseMacCLI`, `NoNoiseMic.driver`,
   and checksums to the `stable` GitHub Release. Versioned `v*` tag releases remain supported.
+
+### 2026-06-15 — Apple Silicon performance mandate
+- Added an `AGENTS.md` rule requiring all future implementation work to optimize for M-series Macs:
+  low CPU, low memory churn, low latency, no avoidable battery drain, and no hot-path allocations or
+  polling without a measured reason. The rule explicitly preserves correctness, privacy, and audio
+  quality as non-negotiable while requiring measured, maintainable performance work.
 
 ### 2026-06-15 — NoNoise logo in menu bar and popover
 - Replaced the SF Symbol waveform used in the menu-bar item and popover status card with a shared

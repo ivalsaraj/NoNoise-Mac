@@ -10,6 +10,8 @@ struct ContentView: View {
             header
             statusCard
             modeCard
+            clarityCard
+            incomingCard
             devicesCard
             driverStatusRow
             footer
@@ -60,9 +62,9 @@ struct ContentView: View {
                     Circle()
                         .fill(on ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.12))
                         .frame(width: 42, height: 42)
-                    NoNoiseLogoAsset()
-                        .frame(width: 30, height: 30)
-                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    Image(systemName: on ? "waveform.badge.magnifyingglass" : "waveform.slash")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(on ? .accentColor : .secondary)
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Noise Cancellation")
@@ -86,6 +88,30 @@ struct ContentView: View {
                 MeterView(level: audioModel.inputLevel)
                     .frame(height: 6)
             }
+
+            if audioModel.isInputNearCeiling || audioModel.isSourceMicClipping || audioModel.isOutputClipping {
+                VStack(alignment: .leading, spacing: 4) {
+                    if audioModel.isSourceMicClipping {
+                        Label("Source mic clipping — lower device input volume if available.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
+                    if audioModel.isInputNearCeiling {
+                        Label("Input too loud", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
+                    if audioModel.isOutputClipping {
+                        Label("Output clipping", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
+                    if let msg = audioModel.smartLevelMessage {
+                        Text(msg).font(.caption2).foregroundColor(.secondary)
+                    }
+                }
+            }
         }
         .nnCard(highlighted: on)
     }
@@ -106,21 +132,60 @@ struct ContentView: View {
         .nnCard()
     }
 
+    // MARK: - Broadcast Voice (clarity)
+
+    private var clarityCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            cardLabel("Broadcast Voice", systemImage: "waveform.path.ecg")
+            Picker("", selection: $audioModel.clarityLevel) {
+                ForEach(ClarityLevel.allCases) { level in
+                    Text(level.label).tag(level)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+        }
+        .nnCard()
+    }
+
+    // MARK: - Clean incoming / guest
+
+    private var incomingCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                cardLabel("Clean Incoming", systemImage: "person.wave.2.fill")
+                Spacer()
+                Toggle("", isOn: $audioModel.incomingCleanupEnabled)
+                    .labelsHidden().toggleStyle(.switch)
+            }
+            if audioModel.incomingCleanupEnabled {
+                Text(audioModel.incomingSourceUID.isEmpty
+                     ? "Pick a loopback source in Settings."
+                     : "Cleaning the guest you hear.")
+                    .font(.caption2).foregroundColor(.secondary)
+            }
+        }
+        .nnCard()
+    }
+
     // MARK: - Devices
 
     private var devicesCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
                 cardLabel("Input", systemImage: "mic.fill")
+                    .frame(width: 74, alignment: .leading)
                 Picker("", selection: $audioModel.selectedInputDeviceID) {
                     ForEach(audioModel.inputDevices, id: \.uniqueID) { device in
                         Text(device.localizedName).tag(device.uniqueID)
                     }
                 }
                 .labelsHidden()
+                .frame(maxWidth: .infinity)
             }
-            VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
                 cardLabel("Output", systemImage: "speaker.wave.2.fill")
+                    .frame(width: 74, alignment: .leading)
                 if audioModel.driverInstalled {
                     // Output is auto-routed to the hidden "NoNoise Mic Engine", which is intentionally
                     // absent from outputDevices — so a picker here would render empty. Show the routing
@@ -129,6 +194,7 @@ struct ContentView: View {
                         Image(systemName: "wand.and.stars").font(.caption2).foregroundColor(.secondary)
                         Text("Automatic → NoNoise Mic").font(.caption).foregroundColor(.secondary)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     Picker("", selection: $audioModel.selectedOutputDeviceID) {
                         ForEach(audioModel.outputDevices) { device in
@@ -136,6 +202,7 @@ struct ContentView: View {
                         }
                     }
                     .labelsHidden()
+                    .frame(maxWidth: .infinity)
                 }
             }
         }
@@ -175,6 +242,11 @@ struct ContentView: View {
                 WindowManager.openSettings(model: audioModel)
             } label: {
                 Label("Settings", systemImage: "slider.horizontal.3")
+            }
+            .controlSize(.small)
+
+            Link(destination: SupportLinks.reportIssueOrFeature) {
+                Label("Report", systemImage: "exclamationmark.bubble")
             }
             .controlSize(.small)
 
