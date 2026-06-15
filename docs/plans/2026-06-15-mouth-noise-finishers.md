@@ -8,6 +8,8 @@
 
 **Tech Stack:** Swift 5.9, SwiftUI, Swift Package Manager, XCTest, scalar math (no Accelerate dependency in any new type).
 
+**GitHub Issue:** #7 — https://github.com/ivalsaraj/NoNoise-Mac/issues/7
+
 **Execution location:** Run all commands from the package root — the directory that contains `Package.swift`. All paths in this plan are relative to that root.
 
 ---
