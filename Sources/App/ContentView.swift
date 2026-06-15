@@ -11,6 +11,7 @@ struct ContentView: View {
             statusCard
             modeCard
             clarityCard
+            incomingCard
             devicesCard
             driverStatusRow
             footer
@@ -143,6 +144,26 @@ struct ContentView: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
+        }
+        .nnCard()
+    }
+
+    // MARK: - Clean incoming / guest
+
+    private var incomingCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                cardLabel("Clean Incoming", systemImage: "person.wave.2.fill")
+                Spacer()
+                Toggle("", isOn: $audioModel.incomingCleanupEnabled)
+                    .labelsHidden().toggleStyle(.switch)
+            }
+            if audioModel.incomingCleanupEnabled {
+                Text(audioModel.incomingSourceUID.isEmpty
+                     ? "Pick a loopback source in Settings."
+                     : "Cleaning the guest you hear.")
+                    .font(.caption2).foregroundColor(.secondary)
+            }
         }
         .nnCard()
     }
