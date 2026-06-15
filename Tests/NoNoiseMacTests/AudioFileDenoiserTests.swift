@@ -24,6 +24,42 @@ final class AudioFileDenoiserTests: XCTestCase {
         let options = AudioDenoiseOptions(inputPath: input.path, outputPath: output.path)
         await XCTAssertThrowsErrorAsync(try await denoiser.denoise(options))
     }
+
+    func testDenoisesGeneratedWavToOutputFile() async throws {
+        let temp = FileManager.default.temporaryDirectory
+        let input = temp.appendingPathComponent("nonoise-test-input.wav")
+        let output = temp.appendingPathComponent("nonoise-test-output.wav")
+        defer {
+            try? FileManager.default.removeItem(at: input)
+            try? FileManager.default.removeItem(at: output)
+        }
+
+        try makeSineWaveFile(url: input, seconds: 0.25)
+
+        let denoiser = AudioFileDenoiser()
+        let options = AudioDenoiseOptions(inputPath: input.path, outputPath: output.path, shouldOverwrite: true)
+        try await denoiser.denoise(options)
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
+        let inputFile = try AVAudioFile(forReading: input)
+        let outputFile = try AVAudioFile(forReading: output)
+        XCTAssertGreaterThan(outputFile.length, 0)
+        let delta = abs(Int64(outputFile.length) - Int64(inputFile.length))
+        XCTAssertLessThanOrEqual(delta, Int64(48_000 * 0.1))
+    }
+}
+
+private func makeSineWaveFile(url: URL, seconds: Double) throws {
+    let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!
+    let file = try AVAudioFile(forWriting: url, settings: format.settings)
+    let frameCount = AVAudioFrameCount(seconds * 48_000)
+    let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)!
+    buffer.frameLength = frameCount
+    let samples = buffer.floatChannelData![0]
+    for i in 0..<Int(frameCount) {
+        samples[i] = 0.05 * sinf(2 * Float.pi * 440 * Float(i) / 48_000)
+    }
+    try file.write(from: buffer)
 }
 
 private func XCTAssertThrowsErrorAsync(
