@@ -107,6 +107,32 @@ final class LoudnessMeterTests: XCTestCase {
                              "relative gate must drop the quiet blocks, keeping the level near the loud passage")
     }
 
+    /// Once the bounded integration window wraps, the rolling block ring must FORGET the
+    /// evicted history: a loud passage followed by enough quieter (but above-gate) audio
+    /// to fully wrap the window integrates to the recent quiet level — NOT a stale
+    /// lifetime average. (Regression: the relative gate previously divided lifetime sums
+    /// while summing only the last `maxBlocks` ring entries, so the two windows desynced
+    /// after wrap.) Uses a tiny 4-block window so the wrap is cheap.
+    func testIntegratedForgetsEvictedBlocksAfterWindowWraps() {
+        let blockLen = Int(0.4 * 48000)                 // samples in one 400 ms block
+        let loud  = powf(10, -14.0 / 20.0)
+        let quiet = powf(10, -40.0 / 20.0)              // 26 dB down, still well above the −70 gate
+        func feed(_ m: inout LoudnessMeter, amp: Float, blocks: Int) {
+            for i in 0..<(blocks * blockLen) {
+                m.process(amp * sinf(2 * Float.pi * 1000 * Float(i) / 48000))
+            }
+        }
+        // Window = 4 blocks. 4 loud blocks then 4 quiet blocks ⇒ ring now holds ONLY quiet.
+        var wrapped = LoudnessMeter(sampleRate: 48000, integrationBlocks: 4)
+        feed(&wrapped, amp: loud,  blocks: 4)
+        feed(&wrapped, amp: quiet, blocks: 4)
+        // Reference: a meter that only ever saw the quiet blocks.
+        var quietOnly = LoudnessMeter(sampleRate: 48000, integrationBlocks: 4)
+        feed(&quietOnly, amp: quiet, blocks: 4)
+        XCTAssertEqual(wrapped.integratedLUFS, quietOnly.integratedLUFS, accuracy: 1.0,
+                       "rolling window must forget the evicted loud blocks after it wraps")
+    }
+
     // MARK: - Normalization gain
 
     /// Quiet program (below target) ⇒ make-up gain > 1 (boost toward target).

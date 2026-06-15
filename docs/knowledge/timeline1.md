@@ -2,6 +2,18 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Fix: integrated-LUFS rolling window desynced after the block ring wrapped
+- Code review (Codex) caught that `LoudnessMeter.integratedLUFS` divided **lifetime** sums
+  (`absGatedCount` / `absGatedMSSum`, incremented forever) to set the relative-gate
+  threshold, while the gated loop only summed the last `maxBlocks` entries actually in the
+  fixed ring. After the 1 h ring wrapped the two windows desynced, so a long-gone loud
+  passage could pin the headline LUFS ~20 LU too high.
+- Fix: keep `absGatedMSSum` in lock-step with the ring (subtract the evicted block before
+  overwriting a full slot), drop the lifetime `absGatedCount`, and divide by
+  `blockMSRingFilled` (the relative loop already reads only those entries). Added a
+  regression test that forces a wrap via a small `internal init(sampleRate:integrationBlocks:)`.
+- `Sources/Core/AudioProcessing/LoudnessMeter.swift`, `Tests/NoNoiseMacTests/LoudnessMeterTests.swift`.
+
 ### 2026-06-15 — Metering & Loudness added
 - Added an ITU-R BS.1770 `LoudnessMeter` (REAL K-weighting via the published 48 kHz
   coefficients — a new `Biquad.setCoefficients` direct-coefficient path — → momentary +

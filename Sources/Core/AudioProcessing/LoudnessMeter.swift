@@ -37,18 +37,30 @@ public struct LoudnessMeter {
     private var blockLen = 0                    // samples per 400 ms block (set in init)
     private var blockMeanSquareSum: Float = 0   // Σ mean-square accumulated in the current block
     private var blockSamples = 0                // samples seen in the current block
-    // Absolute-gate-passing blocks: count + Σ mean-square (for the relative gate's threshold).
-    private var absGatedCount = 0
+    // Σ mean-square of the absolute-gated blocks CURRENTLY in the ring. Kept in lock-step
+    // with the ring (evict-on-overwrite below) so the relative gate's mean and gated set
+    // use the SAME bounded window — they must not desync after the ring wraps.
     private var absGatedMSSum: Float = 0
     // Fixed-size ring of absolute-gated block mean-squares (the relative-gate input).
     // Pre-allocated; write-by-index with wraparound — NEVER appended to on the render path.
-    private static let maxBlocks = 9000         // 9000 × 400 ms = 1 h rolling window (bounded)
+    private let maxBlocks: Int                  // rolling-window length in 400 ms blocks
     private var blockMSRing: [Float]            // count == maxBlocks (allocated in init)
     private var blockMSRingHead = 0             // next write slot (wraps at maxBlocks)
     private var blockMSRingFilled = 0           // how many slots hold real data (≤ maxBlocks)
 
+    /// Default rolling integration window: 9000 × 400 ms = 1 h (bounded memory).
+    static let defaultIntegrationBlocks = 9000
+
     public init(sampleRate: Float = 48000) {
+        self.init(sampleRate: sampleRate, integrationBlocks: Self.defaultIntegrationBlocks)
+    }
+
+    /// Designated initializer with a configurable integration-window length (in 400 ms
+    /// blocks). `internal` so unit tests can force ring wraparound cheaply; production
+    /// always uses the 1-hour default via `init(sampleRate:)`.
+    init(sampleRate: Float, integrationBlocks: Int) {
         self.sampleRate = sampleRate
+        self.maxBlocks = max(1, integrationBlocks)
         // The published BS.1770 K-weighting coefficients below are defined at 48 kHz,
         // which is the engine's fixed render rate (see AGENTS.md DSP invariants). Guard
         // the assumption so a future rate change fails loudly instead of mis-measuring.
@@ -67,7 +79,7 @@ public struct LoudnessMeter {
         let windowLen = max(1, Int(0.4 * sampleRate))   // 400 ms momentary window
         momentaryRing = [Float](repeating: 0, count: windowLen)
         blockLen = max(1, Int(0.4 * sampleRate))         // 400 ms integration block
-        blockMSRing = [Float](repeating: 0, count: Self.maxBlocks)
+        blockMSRing = [Float](repeating: 0, count: maxBlocks)
     }
 
     public mutating func reset() {
@@ -77,7 +89,7 @@ public struct LoudnessMeter {
         samplePeak = 0
         // Integrated (gated) state.
         blockMeanSquareSum = 0; blockSamples = 0
-        absGatedCount = 0; absGatedMSSum = 0
+        absGatedMSSum = 0
         for i in 0..<blockMSRing.count { blockMSRing[i] = 0 }
         blockMSRingHead = 0; blockMSRingFilled = 0
     }
@@ -104,13 +116,17 @@ public struct LoudnessMeter {
             let blockMS = blockMeanSquareSum / Float(blockSamples)
             // Absolute gate: keep only blocks louder than the −70 LUFS floor.
             if Self.loudness(meanSquare: blockMS) > -70 {
-                absGatedCount += 1
+                // Keep absGatedMSSum equal to the SUM of the ring's live entries: when the
+                // ring is full the write below evicts the oldest block, so subtract its
+                // energy first. Otherwise the relative-gate mean would drift on lifetime
+                // history while the gated loop only sees the last `maxBlocks` blocks.
+                if blockMSRingFilled == maxBlocks { absGatedMSSum -= blockMSRing[blockMSRingHead] }
                 absGatedMSSum += blockMS
                 // Write into the fixed ring by index (wraparound) — never append.
                 blockMSRing[blockMSRingHead] = blockMS
                 blockMSRingHead += 1
-                if blockMSRingHead == Self.maxBlocks { blockMSRingHead = 0 }
-                if blockMSRingFilled < Self.maxBlocks { blockMSRingFilled += 1 }
+                if blockMSRingHead == maxBlocks { blockMSRingHead = 0 }
+                if blockMSRingFilled < maxBlocks { blockMSRingFilled += 1 }
             }
             blockMeanSquareSum = 0
             blockSamples = 0
@@ -127,10 +143,12 @@ public struct LoudnessMeter {
     /// (−10 LU) gating over the absolute-gated block set. Returns the silence
     /// sentinel until at least one block passes the absolute gate.
     public var integratedLUFS: Float {
-        guard blockMSRingFilled > 0, absGatedCount > 0 else { return Self.silenceLUFS }
-        // Relative gate: −10 LU below the mean loudness of absolute-gated blocks.
-        // (Mean uses the running absGatedMSSum/absGatedCount; the ring bounds memory.)
-        let absMeanMS = absGatedMSSum / Float(absGatedCount)
+        guard blockMSRingFilled > 0 else { return Self.silenceLUFS }
+        // Relative gate: −10 LU below the mean loudness of the absolute-gated blocks in
+        // the ring. absGatedMSSum and blockMSRingFilled describe the SAME bounded window
+        // (the relative loop below also reads only blockMSRing[0..<blockMSRingFilled]), so
+        // the threshold and the gated set stay consistent even after the ring wraps.
+        let absMeanMS = absGatedMSSum / Float(blockMSRingFilled)
         let relThresholdMS = absMeanMS * powf(10, -10.0 / 10.0)   // −10 LU in the power domain
         var count = 0
         var msSum: Float = 0
