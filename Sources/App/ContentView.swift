@@ -45,13 +45,9 @@ struct ContentView: View {
     }
 
     private var logo: some View {
-        NoNoiseLogoMark()
-            .padding(5)
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-            )
+        NoNoiseLogoAsset()
         .frame(width: 38, height: 38)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
     // MARK: - Status / master toggle (hero)
@@ -64,8 +60,9 @@ struct ContentView: View {
                     Circle()
                         .fill(on ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.12))
                         .frame(width: 42, height: 42)
-                    NoNoiseLogoMark(isActive: on)
-                        .frame(width: 26, height: 26)
+                    NoNoiseLogoAsset()
+                        .frame(width: 30, height: 30)
+                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Noise Cancellation")

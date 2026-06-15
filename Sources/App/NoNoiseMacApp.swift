@@ -14,8 +14,7 @@ struct NoNoiseMacApp: App {
         MenuBarExtra {
             ContentView(audioModel: audioModel)
         } label: {
-            NoNoiseLogoMark(isActive: audioModel.isAIEnabled, isTemplate: true)
-                .frame(width: 18, height: 18)
+            Image(nsImage: NoNoiseLogoImage.menuBar(isActive: audioModel.isAIEnabled))
         }
         .menuBarExtraStyle(.window) // Allows complex SwiftUI view in menu
     }

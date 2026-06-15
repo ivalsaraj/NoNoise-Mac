@@ -54,13 +54,9 @@ struct GeneralSettingsView: View {
     }
 
     private var logo: some View {
-        NoNoiseLogoMark()
-            .padding(5)
-            .background(
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Color(nsColor: .controlBackgroundColor))
-            )
+        NoNoiseLogoAsset()
         .frame(width: 40, height: 40)
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 
     // MARK: Suppression
