@@ -106,4 +106,43 @@ final class LoudnessMeterTests: XCTestCase {
         XCTAssertGreaterThan(m.integratedLUFS, plainAverageWouldBe,
                              "relative gate must drop the quiet blocks, keeping the level near the loud passage")
     }
+
+    // MARK: - Normalization gain
+
+    /// Quiet program (below target) ⇒ make-up gain > 1 (boost toward target).
+    func testNormGainBoostsQuietProgram() {
+        let g = LoudnessMeter.normalizationGain(measuredLUFS: -23, targetLUFS: -14,
+                                                currentGain: 1, maxDb: 12, slewDb: 12)
+        XCTAssertGreaterThan(g, 1.0)
+    }
+
+    /// Loud program (above target) ⇒ gain < 1 (pull down toward target).
+    func testNormGainAttenuatesLoudProgram() {
+        let g = LoudnessMeter.normalizationGain(measuredLUFS: -8, targetLUFS: -14,
+                                                currentGain: 1, maxDb: 12, slewDb: 12)
+        XCTAssertLessThan(g, 1.0)
+    }
+
+    /// The make-up gain is clamped to ±maxDb so a near-silent meter can't blow up.
+    func testNormGainIsClampedToMaxDb() {
+        let g = LoudnessMeter.normalizationGain(measuredLUFS: -90, targetLUFS: -14,
+                                                currentGain: 1, maxDb: 12, slewDb: 100)
+        XCTAssertLessThanOrEqual(g, powf(10, 12.0 / 20.0) + 1e-4, "gain capped at +12 dB")
+    }
+
+    /// Silence (below the absolute gate) holds the current gain — no gain-pumping on gaps.
+    func testNormGainHoldsOnSilence() {
+        let g = LoudnessMeter.normalizationGain(measuredLUFS: LoudnessMeter.silenceLUFS,
+                                                targetLUFS: -14, currentGain: 1.7, maxDb: 12, slewDb: 12)
+        XCTAssertEqual(g, 1.7, accuracy: 1e-6, "no measurement → hold gain (no pumping)")
+    }
+
+    /// Per-update change is slew-limited (can't jump the full distance in one tick).
+    func testNormGainIsSlewLimited() {
+        // Target needs +9 dB but slew caps the per-tick move at +3 dB from unity.
+        let g = LoudnessMeter.normalizationGain(measuredLUFS: -23, targetLUFS: -14,
+                                                currentGain: 1, maxDb: 12, slewDb: 3)
+        XCTAssertLessThanOrEqual(g, powf(10, 3.0 / 20.0) + 1e-4, "slew caps the step")
+        XCTAssertGreaterThan(g, 1.0)
+    }
 }

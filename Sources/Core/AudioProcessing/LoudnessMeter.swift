@@ -146,4 +146,21 @@ public struct LoudnessMeter {
         guard ms > 0 else { return silenceLUFS }
         return -0.691 + 10 * log10f(ms)
     }
+
+    /// Slew-limited make-up gain toward a loudness target. Returns a LINEAR gain
+    /// to multiply the signal by. Holds `currentGain` when there is no measurement
+    /// (silence below the absolute gate) so silent gaps never cause pumping.
+    /// `maxDb` clamps the absolute make-up; `slewDb` caps the per-update change.
+    static func normalizationGain(measuredLUFS: Float, targetLUFS: Float,
+                                  currentGain: Float, maxDb: Float, slewDb: Float) -> Float {
+        guard measuredLUFS > silenceLUFS else { return currentGain }   // no data → hold
+        let neededDb = targetLUFS - measuredLUFS                       // + = boost, − = cut
+        let clampedTargetDb = min(max(neededDb, -abs(maxDb)), abs(maxDb))
+        let targetGain = powf(10, clampedTargetDb / 20)
+        // Slew toward targetGain in the dB domain so steps are perceptually even.
+        let currentDb = 20 * log10f(max(currentGain, 1e-6))
+        let targetGainDb = 20 * log10f(max(targetGain, 1e-6))
+        let stepDb = min(max(targetGainDb - currentDb, -abs(slewDb)), abs(slewDb))
+        return powf(10, (currentDb + stepDb) / 20)
+    }
 }
