@@ -2,6 +2,17 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Offline audio file denoise CLI (Valsaraj)
+- Added `NoNoiseMacCLI --denoise <input> --output <out>` for on-device file cleanup: AVFoundation
+  decode → mono 48 kHz → `DeepFilterNetDSP` (with readiness wait) → preset `VoiceChain` → atomic
+  temp write. Audio containers only; MP4/video remux explicitly deferred.
+- New Core types: `CLIArguments`, `AudioDenoiseOptions`, `AudioFileDenoiser`. Live device and
+  `--action` modes unchanged.
+- `Sources/Core/CLIArguments.swift`, `Sources/Core/AudioFileDenoiser.swift`,
+  `Sources/Core/AudioProcessing/DeepFilterNetDSP.swift`, `Sources/CLI/main.swift`,
+  `Tests/NoNoiseMacTests/CLIArgumentsTests.swift`, `Tests/NoNoiseMacTests/AudioFileDenoiserTests.swift`,
+  `Tests/NoNoiseMacTests/DeepFilterNetDSPTests.swift`, `README.md`, `CONCEPTS.md`, `AGENTS.md`.
+
 ### 2026-06-15 — Menu-bar perf: meter observation made idempotent per source (Codex review)
 - Codex code review (gpt-5.5, IMPORTANT) flagged that `begin/endMeterObservation` used a blind
   counter, so a duplicate popover `onAppear` or a missed `onDisappear` drifted `meterObserverCount`

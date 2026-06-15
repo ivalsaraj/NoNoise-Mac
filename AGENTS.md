@@ -30,8 +30,10 @@ cable so any app (Zoom, Meet, Discord, OBS, …) receives studio-clean audio.
   - `AudioProcessing/IncomingCleanupEngine` — a SECOND, independent capture→clean→play pipeline ("clean the other side"). Captures a loopback/aggregate **INPUT** device, runs its OWN `DeepFilterNetDSP` instance (DFN only — **no** `VoiceChain`), plays to the user's monitor output. NOT an `AudioModel` (no mic coupling, no auto-route to the NoNoise Mic sink). Held by `AudioModel` as an OPTIONAL (`IncomingCleanupEngine?`) and created ONLY while enabled. See "Incoming / guest cleanup" below.
   - `AudioProcessing/RingBuffer`, `SpecHistoryRingBuffer`, `AudioUtils` — buffers + helpers.
   - `VoicePreset` — preset → DSP params + voice-chain settings (single source of truth).
+  - `CLIArguments` + `AudioDenoiseOptions` — shared CLI parser (live device, `--action`, `--denoise`).
+  - `AudioFileDenoiser` — offline file decode → mono 48 kHz → `DeepFilterNetDSP` → optional `VoiceChain` → write WAV/CAF/etc. Waits on `DeepFilterNetDSP.waitUntilReady()` before processing; writes to a temp sibling then moves on success.
 - `Sources/App` — SwiftUI menu-bar app: `NoNoiseMacApp`, `ContentView` (popover), `SettingsView`.
-- `Sources/CLI` — `NoNoiseMacCLI`, a headless input→output pipeline.
+- `Sources/CLI` — `NoNoiseMacCLI`: live device pipeline, one-shot `--action` URL dispatch, and `--denoise` offline file mode (audio containers only — no MP4/video remux in v1).
 - `Resources` — `DeepFilterNet3_Streaming.mlmodelc`, `AppIcon.icns`, `NoNoiseMacLogo.png`, `Info.plist`, `NoNoiseMac.entitlements`.
 - `Tests/NoNoiseMacTests` — pure DSP / preset / voice-chain unit tests (run headless).
 
@@ -39,7 +41,7 @@ cable so any app (Zoom, Meet, Discord, OBS, …) receives studio-clean audio.
 ```bash
 swift build                 # debug
 swift build -c release --arch arm64  # optimized Apple Silicon release (bundle.sh prerequisite)
-swift test                  # 30 pure tests — no mic/CoreML runtime needed
+swift test                  # headless unit tests (+ one CoreML file-denoise integration test)
 ./bundle.sh                 # → NoNoiseMac.app + NoNoiseMacCLI (codesigned w/ entitlements)
 ./bundle.sh --with-driver   # also builds NoNoiseMic.driver and stages it NEXT TO the app
 ./install-app.sh            # arm64 release build + bundle + install to /Applications
@@ -147,6 +149,11 @@ Do not add entitlements beyond these two without a measured, documented need.
 - Chain params are a pure function of `VoicePreset.voiceChain` (NOT persisted per-stage) plus the orthogonal **Broadcast Voice** `ClarityLevel` and **Mouth Noise** `MouthNoiseLevel`. The chain runs when `(voicePolishEnabled && preset.voiceChain.enabled) || clarity != .off || mouthNoise != .off`. Meeting polish = off; Podcast/Tutorial/Custom = on; Broadcast Voice (presence + de-esser) and Mouth Noise (de-plosive + de-click) layer on any mode independently. Persisted: `mv.voicePolish`, `mv.clarity`, `mv.mouthNoise` (plus the Tier 1 `mv.preset`). `configure` resets ALL stage state on inactive→active; resets ONLY clarity stages when `clarity` changes while active; resets ONLY mouth-noise stages when `mouthNoiseLevel` changes while active (bumpless otherwise).
 - `applyVoiceChain()` reconfigures the chain on every preset transition (explicit pick AND the auto-flip to Custom) and on toggle/load — never from the per-tick knob path more than once per transition. `voicePolishEnabled.didSet` is guarded by `!isApplyingPreset` exactly like the Tier 1 knobs.
 - A **Voice Profile** is a named snapshot of ALL user-tunable settings (`selectedPreset`, `suppressionStrength`, `attenuationLimitDb`, `outputGainValue`, `voicePolishEnabled`, `clarityLevel`) persisted as a JSON array under `mv.profiles`. Applying a profile goes through the same `isApplyingPreset` guard as `applyPreset` + `applyVoiceChain` — all `@Published` properties are set inside `isApplyingPreset = true … = false`, then a single `applyVoiceChain()` and `persistSettings()` are called after. This prevents spurious `onKnobChanged` → `.custom` flips or redundant persists mid-apply. Future settings fields must be added to `VoiceProfile` as optionals (schema version stays at 1) so old profiles survive without migration.
+
+## CLI offline file mode
+- **Three CLI modes** (mutually exclusive): live device `--in`/`--out`, one-shot `--action`, offline `--denoise`/`--output`. Parser lives in `Sources/Core/CLIArguments.swift` (unit-tested).
+- **Offline path** — `AudioFileDenoiser` decodes with AVFoundation, waits on `DeepFilterNetDSP.waitUntilReady()`, streams mono 48 kHz through DFN then preset `VoiceChain`, writes via temp file + atomic move. MP4/video remux is explicitly out of scope.
+- **Preset knobs** — `--preset` resolves DSP defaults from `VoicePreset.parameters`; explicit `--gain` / `--strength` / `--attenuation-db` override after preset resolution (same precedence as the plan's parser tests).
 
 ## Control layer (Tier 4) — `Sources/Core/ControlLayer.swift`, `Sources/App/ActionDispatcher.swift`, `Sources/App/HotkeyManager.swift`
 

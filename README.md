@@ -232,6 +232,16 @@ input/output devices it detects on launch.
 ./NoNoiseMacCLI --in "Loopback Audio" --out "MacBook Pro Speakers" --gain 1.5
 ```
 
+### Offline audio file cleanup
+
+Clean an audio file locally:
+
+```bash
+./NoNoiseMacCLI --denoise noisy.wav --output clean.wav --preset podcast --overwrite
+```
+
+This v1 file mode writes a cleaned audio file. Video containers such as MP4 are planned separately so the CLI can preserve the original video track correctly.
+
 ## 🔬 How it works
 
 ```

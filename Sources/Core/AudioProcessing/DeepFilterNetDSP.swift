@@ -132,6 +132,20 @@ class DeepFilterNetDSP {
     /// At/above this dB value the attenuation limit is treated as "unlimited"
     /// (minGain = 0 → the model may fully suppress a bin).
     static let maxAttenuationLimitDb: Float = 100.0
+
+    /// True once the CoreML model has finished loading. Offline jobs must wait
+    /// before calling `process` — otherwise output is passthrough STFT only.
+    public var isReady: Bool { isModelLoaded }
+
+    /// Poll until the model is ready or `timeoutSeconds` elapses.
+    public func waitUntilReady(timeoutSeconds: TimeInterval = 15) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while !isReady {
+            if Date() >= deadline { return false }
+            try? await Task.sleep(nanoseconds: 50_000_000)
+        }
+        return true
+    }
     
     // OLA Accumulator (Strict Alignment)
     private var olaBuffer: [Float] = []

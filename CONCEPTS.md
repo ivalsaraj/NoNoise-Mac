@@ -93,3 +93,13 @@ docs, and reviews.
   is the voice-chain limiter (≈ −1 dBFS; −0.5 in Tutorial), not certified dBTP.
 - **Output telemetry runs whenever audio flows** (like Smart Level's), so the output
   meter/LUFS are live in passthrough too; AI activity is the only AI-gated readout.
+
+## CLI / offline denoise
+- **Offline denoise** — `NoNoiseMacCLI --denoise <input> --output <out>` reads an audio file
+  (WAV, CAF, M4A, AIFF, … via `AVAudioFile`), resamples/downmixes to mono 48 kHz Float32, runs
+  the same on-device `DeepFilterNetDSP` + preset `VoiceChain` as the live app, and writes a cleaned
+  audio file. **Not** MP4/video remux — video containers are out of scope for v1.
+- **Readiness gate** — offline jobs MUST `await dsp.waitUntilReady()` before the first `process`
+  call; pre-load passthrough would silently skip noise cancellation.
+- **Atomic output** — write to `.<filename>.tmp` beside the destination, move on success only;
+  failed runs must not leave a partial file at the requested output path.
