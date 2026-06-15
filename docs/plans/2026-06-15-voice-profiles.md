@@ -84,9 +84,47 @@ Expected: `Switched to a new branch 'feat/voice-profiles'`. Throughout this plan
 
 Define the versioned, extensible snapshot schema. All future plans add fields as optionals; no migration is needed for any optional field. This is the single most important design invariant — tests enforce it directly.
 
+`VoiceProfile` references `VoicePreset` and `ClarityLevel` directly inside its `Codable` synthesis. Swift's Codable synthesis for a containing type requires every stored-property type to also be `Codable`. Neither enum currently conforms, so they must be updated first or the `VoiceProfile: Codable` declaration is a build-breaker.
+
 **Files:**
+- Modify: `Sources/Core/VoicePreset.swift`
+- Modify: `Sources/Core/AudioProcessing/VoiceChain.swift`
 - Create: `Sources/Core/VoiceProfile.swift`
 - Create: `Tests/NoNoiseMacTests/VoiceProfileTests.swift`
+
+- [ ] **Step 0: Add `Codable` to `VoicePreset` and `ClarityLevel`**
+
+In `Sources/Core/VoicePreset.swift`, change the enum declaration from:
+
+```swift
+public enum VoicePreset: String, CaseIterable, Identifiable, Sendable {
+```
+
+to:
+
+```swift
+public enum VoicePreset: String, CaseIterable, Identifiable, Codable, Sendable {
+```
+
+In `Sources/Core/AudioProcessing/VoiceChain.swift`, change the `ClarityLevel` declaration from:
+
+```swift
+public enum ClarityLevel: String, CaseIterable, Identifiable, Sendable {
+```
+
+to:
+
+```swift
+public enum ClarityLevel: String, CaseIterable, Identifiable, Codable, Sendable {
+```
+
+Both enums use `String` raw values and have no associated values, so Swift synthesizes `Codable` conformance automatically — no `encode`/`decode` implementation needed. Run `swift build` after this step to confirm zero new warnings.
+
+```bash
+swift build
+```
+
+Expected: build succeeds. Both enums compile with `Codable` added.
 
 - [ ] **Step 1: Write the failing tests** — create `Tests/NoNoiseMacTests/VoiceProfileTests.swift`
 
@@ -536,6 +574,28 @@ public struct VoiceProfileStore {
         profiles.first { $0.id == id }
     }
 
+    /// Alias for `save(_:)` — add a new profile or update an existing one by ID.
+    /// Provided so call sites in `AudioModel` can express intent explicitly ("upsert").
+    public mutating func upsert(_ profile: VoiceProfile) {
+        save(profile)
+    }
+
+    /// Alias for `delete(id:)` — remove the profile with the given ID. No-op if not found.
+    /// Provided so `AudioModel` call sites read as `store.remove(id:)` rather than `store.delete(id:)`,
+    /// avoiding confusion with Swift collection's `remove(at:)` and matching the intent more clearly.
+    public mutating func remove(id: UUID) {
+        delete(id: id)
+    }
+
+    /// Build a store from an existing array without violating `private(set)`.
+    /// Used by `AudioModel` to reconstruct a mutable store from its `@Published var profiles`
+    /// so it can call mutating store methods and then read back `store.profiles`.
+    public static func from(_ profiles: [VoiceProfile]) -> VoiceProfileStore {
+        var store = VoiceProfileStore()
+        profiles.forEach { store.save($0) }
+        return store
+    }
+
     // MARK: - Serialization
 
     /// Encode the entire profiles array to JSON. Throws on encoder failure (extremely unlikely
@@ -614,6 +674,8 @@ Immediately after `@Published public var clarityLevel` (added by the Broadcast V
 
 - [ ] **Step 3: Add profile operations**
 
+`VoiceProfileStore.profiles` is `public private(set)` — it cannot be assigned from outside the type. All mutations in `AudioModel` must go through the store's own mutating API (`save`, `delete`, `rename`). The `from(_:)` class helper on `VoiceProfileStore` (defined in Task 2 Step 3) rebuilds a store from an existing array for `persistProfiles`.
+
 Add the following methods in the `// MARK: - Presets & suppression knobs` section, after `onKnobChanged()`:
 
 ```swift
@@ -633,9 +695,8 @@ Add the following methods in the `// MARK: - Presets & suppression knobs` sectio
             voicePolishEnabled: voicePolishEnabled,
             clarityLevel: clarityLevel
         )
-        var store = VoiceProfileStore()
-        store.profiles = profiles
-        store.save(profile)
+        var store = VoiceProfileStore.from(profiles)
+        store.upsert(profile)
         profiles = store.profiles
         persistProfiles()
     }
@@ -644,6 +705,9 @@ Add the following methods in the `// MARK: - Presets & suppression knobs` sectio
     /// — setting each @Published property does NOT trigger `onKnobChanged` mid-apply
     /// — `persistSettings` and `applyVoiceChain` are called exactly once, after all values are set
     /// — `selectedPreset` does not spuriously flip to `.custom` during the apply
+    ///
+    /// Verified by the REQUIRED manual smoke test (step 4 of the smoke test checklist).
+    /// `AudioModel.init()` starts CoreAudio/AVCapture, making headless XCTest impossible here.
     public func applyProfile(_ profile: VoiceProfile) {
         isApplyingPreset = true
         // Apply DSP suppression knobs from the profile's stored values (not re-derived from preset,
@@ -668,17 +732,15 @@ Add the following methods in the `// MARK: - Presets & suppression knobs` sectio
 
     /// Delete a saved profile by ID and persist.
     public func deleteProfile(id: UUID) {
-        var store = VoiceProfileStore()
-        store.profiles = profiles
-        store.delete(id: id)
+        var store = VoiceProfileStore.from(profiles)
+        store.remove(id: id)
         profiles = store.profiles
         persistProfiles()
     }
 
     /// Rename a saved profile and persist.
     public func renameProfile(id: UUID, to newName: String) {
-        var store = VoiceProfileStore()
-        store.profiles = profiles
+        var store = VoiceProfileStore.from(profiles)
         store.rename(id: id, to: newName)
         profiles = store.profiles
         persistProfiles()
@@ -686,45 +748,41 @@ Add the following methods in the `// MARK: - Presets & suppression knobs` sectio
 
     /// Serialize the current profiles array to UserDefaults under `mv.profiles`.
     private func persistProfiles() {
-        guard let data = try? VoiceProfileStore(profiles: profiles).encodeToJSON() else { return }
+        guard let data = try? VoiceProfileStore.from(profiles).encodeToJSON() else { return }
         UserDefaults.standard.set(data, forKey: PrefKey.profiles)
     }
 ```
 
-> **Note on `persistProfiles`:** `VoiceProfileStore` is a value type with a private `profiles` setter. Add a convenience init `public init(profiles: [VoiceProfile])` to `VoiceProfileStore` in the next step, or change the `persistProfiles` implementation to build the store via mutations. The simplest approach matching the existing code style: use the already-built `store` from the caller's body by extracting a private helper that takes a `VoiceProfileStore`.
+The `VoiceProfileStore.from(_:)` class helper and `upsert`/`remove` API must be added to `VoiceProfileStore` — do this before adding the `AudioModel` methods above. Open `Sources/Core/VoiceProfileStore.swift` and make the following two additions:
 
-Revised, simpler `persistProfiles` that avoids needing a new init:
+**1. Rename `save` to `upsert`** (or add `upsert` as an alias for `save`) so the call-site reads as intent-revealing. The simplest approach that keeps the existing tests passing is to add `upsert` as a public alias:
 
 ```swift
-    private func persistProfiles() {
-        var store = VoiceProfileStore()
-        store.profiles = profiles   // VoiceProfileStore.profiles is settable from within AudioModel
-        // If profiles is a let, change to: profiles.forEach { store.save($0) }
-        guard let data = try? store.encodeToJSON() else { return }
-        UserDefaults.standard.set(data, forKey: PrefKey.profiles)
+    /// Alias for `save(_:)` — add a new profile or update an existing one by ID.
+    /// Using "upsert" at the AudioModel call site makes the intent explicit.
+    public mutating func upsert(_ profile: VoiceProfile) {
+        save(profile)
     }
 ```
 
-Since `VoiceProfileStore.profiles` has a `private(set)` setter, a helper method is the cleanest approach. Add a package-internal helper to `VoiceProfileStore`:
+**2. Rename `delete(id:)` to `remove(id:)`** (or add `remove` as an alias) and add the `from(_:)` helper:
 
 ```swift
-    // Package-internal helper for AudioModel to build a store from an array.
-    // Using `internal` (not `public`) keeps this out of the public API surface.
-    static func from(_ profiles: [VoiceProfile]) -> VoiceProfileStore {
+    /// Alias for `delete(id:)` — removes the profile with the given ID. No-op if not found.
+    public mutating func remove(id: UUID) {
+        delete(id: id)
+    }
+
+    /// Build a store from an existing array. Used by AudioModel to reconstruct a mutable
+    /// store from `@Published var profiles: [VoiceProfile]` without violating `private(set)`.
+    public static func from(_ profiles: [VoiceProfile]) -> VoiceProfileStore {
         var store = VoiceProfileStore()
         profiles.forEach { store.save($0) }
         return store
     }
 ```
 
-Then `persistProfiles` in `AudioModel`:
-
-```swift
-    private func persistProfiles() {
-        guard let data = try? VoiceProfileStore.from(profiles).encodeToJSON() else { return }
-        UserDefaults.standard.set(data, forKey: PrefKey.profiles)
-    }
-```
+Add these to `Sources/Core/VoiceProfileStore.swift` in the `// MARK: - CRUD` section. The `from(_:)` helper was already referenced in the Task 2 Step 3 implementation — verify it is present before proceeding.
 
 - [ ] **Step 4: Load profiles in `loadSettings()`**
 
@@ -754,16 +812,20 @@ git commit -m "feat(audio): persist, load, and apply Voice Profiles in AudioMode
 
 ---
 
-## Task 4: `AudioModel` apply-profile unit tests (pure logic path)
+## Task 4: Serialization and snapshot round-trip tests
 
-`AudioModel` itself cannot be tested headlessly (its `init()` starts CoreAudio/AVCapture). But the `applyProfile` *logic* — that it correctly sets each setting and that `persistSettings` + `applyVoiceChain` are called exactly once — is verified by the behavioral contract: after `applyProfile`, the `@Published` properties must match the profile. The closest we can get headlessly is testing `VoiceProfileStore.from(_:)` + round-trip, which is already covered in Task 2.
+`AudioModel` itself cannot be tested headlessly (`init()` starts CoreAudio/AVCapture). The live `applyProfile` path — that it sets each `@Published` property, calls `applyVoiceChain()` exactly once, and calls `persistSettings()` exactly once without intermediate `.custom` flips — is verified **exclusively by the REQUIRED manual smoke test** (step 4 of the smoke test checklist below). No XCTest can exercise this path without a running audio engine.
 
-Instead, this task adds one additional test that covers the `applyProfile` *shape invariant*: that the profile we pass in becomes exactly the current state's snapshot.
+What XCTest *can* verify headlessly:
+- The JSON serialization contract: a `VoiceProfile` round-trips through `VoiceProfileStore` without data loss.
+- Insertion-order stability across a JSON encode/decode round-trip (required for stable UI ordering).
+
+These tests are added here as regression guards for the serialization layer that `applyProfile` depends on.
 
 **Files:**
 - Modify: `Tests/NoNoiseMacTests/VoiceProfileTests.swift`
 
-- [ ] **Step 1: Add the snapshot consistency test**
+- [ ] **Step 1: Add the snapshot and insertion-order round-trip tests**
 
 Append inside `VoiceProfileTests`:
 
@@ -828,7 +890,7 @@ git commit -m "test(core): add applyProfile shape contract and insertion-order r
 
 ## Task 5: Settings UI — Voice Profiles card
 
-Add a `profilesCard` to `GeneralSettingsView` in `SettingsView.swift`. The card lists saved profiles with Save Current / Recall / Rename / Delete actions. Inline rename uses an `NSAlert`-based sheet triggered from the SwiftUI button so it works within the macOS `NSPopover` constraints.
+Add a `profilesCard` to `GeneralSettingsView` in `SettingsView.swift`. The card lists saved profiles with Save Current / Recall / Rename / Delete actions. Inline rename uses a SwiftUI `.popover` anchored to the pencil button — consistent with how the parent settings window is itself presented as an `NSPopover` from the menu-bar icon.
 
 **Files:**
 - Modify: `Sources/App/SettingsView.swift`
@@ -888,7 +950,7 @@ Add the computed property after `suppressionCard`:
             }
 
             if audioModel.profiles.isEmpty {
-                Text("No profiles saved yet. Dial in your settings and tap "Save Current".")
+                Text("No profiles saved yet. Dial in your settings and tap \"Save Current\".")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -902,7 +964,7 @@ Add the computed property after `suppressionCard`:
             }
         }
         .nnCard()
-        // "Save Current" sheet — presented as an alert since NSAlert is native on macOS.
+        // "Save Current" sheet — presented as a SwiftUI sheet over the settings window.
         .sheet(isPresented: $isShowingSaveSheet) {
             saveProfileSheet
         }
@@ -1028,7 +1090,23 @@ git commit -m "feat(ui): add Voice Profiles card to Settings (save, recall, rena
 
 - [ ] **Step 1: Update `CLAUDE.md`**
 
-In the **"Presets & intensity knobs"** section of `CLAUDE.md`, locate the paragraph that ends with:
+**1a. Fix the architecture map chain-order description (line 29).**
+
+In the **"Architecture map"** section, change the split description:
+
+```
+post-DSP "voice polish" (high-pass → shelves → compressor → limiter) plus the optional **Broadcast Voice** clarity stages (presence peaking bell → subtractive `DeEsser`), driven by `ClarityLevel` and gated independently of the noise preset.
+```
+
+to the merged single-order that matches the actual `VoiceChain.process` implementation:
+
+```
+post-DSP "voice polish": unified chain `hp → shelves → presence → deEsser → comp → limiter` (polish stages gated by `voicePolishEnabled`; clarity stages gated by `clarity != .off`; limiter always runs while active), driven by `ClarityLevel` and the per-preset `VoiceChainSettings`.
+```
+
+The "Voice polish chain (Tier 2)" section (line 141) already states the correct merged order — line 29 was a leftover from before the Broadcast Voice plan added the clarity stages inline.
+
+**1b. Add the Voice Profiles prose.** In the **"Presets & intensity knobs"** section, locate the paragraph that ends with:
 
 > `Only the mv.voicePolish master toggle is persisted (plus the Tier 1 mv.preset).`
 
@@ -1124,8 +1202,8 @@ The headless suite does not exercise the live audio path or SwiftUI. After imple
 
 ## Self-Review (completed during authoring)
 
-- **Spec coverage:** Named profiles (save/recall/rename/delete) ✓ Tasks 2–5. Serialized to `mv.profiles` ✓ Task 3. All 6 user-tunable settings captured ✓ `VoiceProfile` struct. Extensible schema with version + optionals ✓ Task 1, explicitly called out for in-flight plans. Apply goes through `isApplyingPreset` guard ✓ Task 3 `applyProfile`. UI list in Settings ✓ Task 5.
-- **Invariant coverage:** `isApplyingPreset` re-entrancy documented and enforced in Task 3 Step 3 with a step-by-step breakdown of the exact apply order. `mv.*` namespace preserved — only one new key `mv.profiles` added. No "MetalVoice"/"Ghostkwebb" appears anywhere in Sources/. All paths are repo-relative.
-- **TDD granularity:** Tasks 1 and 2 follow strict red → green → commit TDD. Tasks 3 and 5 are `swift build`-verified (cannot unit-test `AudioModel` or SwiftUI headlessly — matches the precedent set by the broadcast voice plan's Task 5 and Task 6). Task 4 adds pure-logic regression tests for the shape contract.
+- **Spec coverage:** Named profiles (save/recall/rename/delete) ✓ Tasks 2–5. Serialized to `mv.profiles` ✓ Task 3. All 6 user-tunable settings captured ✓ `VoiceProfile` struct. Extensible schema with version + optionals ✓ Task 1, explicitly called out for in-flight plans. Apply goes through `isApplyingPreset` guard ✓ Task 3 `applyProfile`. UI list in Settings ✓ Task 5. `VoicePreset` and `ClarityLevel` conformance to `Codable` ✓ Task 1 Step 0 (prerequisite for `VoiceProfile: Codable` synthesis).
+- **Invariant coverage:** `isApplyingPreset` re-entrancy documented and enforced in Task 3 Step 3 with a step-by-step breakdown of the exact apply order. `mv.*` namespace preserved — only one new key `mv.profiles` added. No "MetalVoice"/"Ghostkwebb" appears anywhere in Sources/. All paths are repo-relative. `VoiceProfileStore.profiles` `private(set)` invariant respected — `AudioModel` never assigns to `store.profiles` directly; it uses `upsert`/`remove`/`rename` methods and `VoiceProfileStore.from(_:)` exclusively.
+- **TDD granularity:** Tasks 1 and 2 follow strict red → green → commit TDD. Tasks 3 and 5 are `swift build`-verified (cannot unit-test `AudioModel` or SwiftUI headlessly — matches the precedent set by the broadcast voice plan's Task 5 and Task 6). Task 4 adds pure serialization and insertion-order round-trip regression tests — it does NOT claim to test `AudioModel.applyProfile` (which requires a live CoreAudio engine); that path is verified exclusively by the manual smoke test.
 - **Extensibility:** the three future fields (`lufsTarget`, `normalizationEnabled`, `deplosiveLevel`, `declickLevel`) are documented with commented-out stubs in `VoiceProfile.swift` and the decision is captured in `knowledge1.md`.
 - **No placeholder code:** every step shows complete, copy-pasteable implementations.
