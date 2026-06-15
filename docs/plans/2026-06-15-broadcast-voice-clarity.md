@@ -1031,3 +1031,17 @@ The headless suite cannot exercise the live audio path. After implementation, ve
 - **Spec coverage:** "Broadcast Voice" name → Tasks 6/7 UI + README. Off/Low/Medium/High → `ClarityLevel` (Task 3), exposed in both UIs. "Must feel like original" → subtractive de-esser identity (Task 2), unity-DC presence bell (Task 1), `clarity==.off` no-op (Task 4), explicit identity/regression tests + manual step 4. Persistence → Task 5.
 - **Placeholder scan:** none — every code step shows complete code and exact commands.
 - **Type consistency:** `ClarityLevel` (with `presenceDb`, `deEssMaxReductionDb`, `label`, `allCases`, `id`), `ClarityProfile` constants, `DeEsser.configure(crossoverHz:thresholdDb:maxReductionDb:attackMs:releaseMs:sampleRate:enabled:)`, `Biquad.setPeaking(freq:gainDb:sampleRate:q:)`, `VoiceChainSettings.clarity`, `VoiceChain.isActive`, and `AudioModel.clarityLevel` are used consistently across tasks.
+
+---
+
+## Post-Implementation Amendments
+
+Recorded after the implementation passed Codex 5.5 code review (approved, Round 2). These document where the plan-as-written diverged from what shipped, so the plan stays a faithful learning artifact.
+
+1. **De-esser loud-sibilance probe moved 7.5 kHz → 10 kHz (Task 2).**
+   - *Root cause (plan gap):* the plan's Task 2 test asserted ≥15% subtractive reduction on a 7.5 kHz tone with a 6 kHz crossover. For a subtractive de-esser (`out = x − frac·sib`), the high-pass imposes ~70° phase shift just above its corner, which mathematically caps cancellation near ~6% there regardless of `maxReductionDb` — the assertion was unsatisfiable by construction.
+   - *Fix:* kept the `DeEsser` implementation and all `ClarityProfile` tuning byte-for-byte; moved only the probe to 10 kHz (a frequency the de-esser genuinely tames), preserving the strong `≤0.85` assertion. Audio behavior is unchanged from the plan. (Maintainer-approved, Option A.)
+
+2. **Added `testPeakingHasUnityNyquistGain` (Task 1).**
+   - *Root cause (plan gap):* the design notes claimed the presence bell has "`|H(Nyquist)| = 1` ... proven in Task 1's test", but Task 1's enumerated tests only proved DC, center-boost, and low-end — the Nyquist proof was promised but never specified.
+   - *Fix:* added a tests-only Nyquist-unity proof driving the real `Biquad.process` path with an alternating `(-1)^n` probe (a `sinf` Nyquist tone is identically zero). Task 1's test block and pass count were synced. No production code changed.
