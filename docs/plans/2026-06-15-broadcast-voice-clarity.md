@@ -10,7 +10,7 @@
 
 **GitHub Issue:** #1 — https://github.com/ivalsaraj/NoNoise-Mac/issues/1
 
-**Execution location:** Run all commands from the package root — the `MetalVoice-src/` directory (where `Package.swift` lives). All paths in this plan are relative to that root.
+**Execution location:** Run all commands from the package root — the directory that contains `Package.swift`. All paths in this plan are relative to that root.
 
 ---
 
@@ -61,7 +61,7 @@ Fixed constants (`ClarityProfile`): presence `4500 Hz` / `Q 0.7`; de-ess crossov
 - [ ] **Step 1: Create a feature branch** (repo is on `main` with unrelated working-tree changes — do NOT stage those)
 
 ```bash
-# Run from the package root (the MetalVoice-src/ directory, where Package.swift lives)
+# Run from the package root (the directory that contains Package.swift)
 git checkout -b feat/broadcast-voice-clarity
 ```
 
@@ -490,6 +490,57 @@ Carry `clarity` on `VoiceChainSettings`; insert the two stages into the chain; m
         quiet.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
         XCTAssertTrue(quiet.allSatisfy { abs($0) < 1e-3 }, "re-activation must start clean")
     }
+
+    /// Off→On (and level changes) while the chain stays active must reset the clarity stages.
+    /// Isolated by keeping polish OFF (enabled=false) so only presence+de-esser+limiter run —
+    /// no polish ringing to confound the silence assertion.
+    func testClarityChangeResetsStagesWhileActive() {
+        let chain = VoiceChain()
+        var s = VoiceChainSettings.disabled   // polish OFF; chain active via clarity only
+        s.clarity = .high
+        chain.configure(s)
+        // Energize the clarity stages with a loud sibilant-rich burst.
+        var burst = [Float](repeating: 0, count: 4800)
+        for i in 0..<burst.count { burst[i] = 0.9 * sinf(2 * Float.pi * 7000 * Float(i) / 48000) }
+        burst.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+        // Change clarity level while still active (high→low): must reset the clarity stages.
+        s.clarity = .low
+        chain.configure(s)
+        // Silence in → no stale presence/de-esser ringing may leak (only clarity stages run here).
+        var quiet = [Float](repeating: 0, count: 128)
+        quiet.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+        XCTAssertTrue(quiet.allSatisfy { abs($0) < 1e-4 },
+                      "clarity stages must reset on change — no stale ringing")
+    }
+
+    /// Clarity = Off must leave an enabled (polish-on) preset bit-identical to the canonical
+    /// hp→lowShelf→highShelf→compressor→limiter chain — proving Broadcast Voice Off is a true no-op.
+    func testClarityOffMatchesCanonicalPolishChain() {
+        let s = VoicePreset.podcast.voiceChain        // clarity defaults to .off
+        let chain = VoiceChain()
+        chain.configure(s)
+        // Reference: the same primitives in the legacy order, with NO presence/de-esser stages.
+        var hp = Biquad(), lo = Biquad(), hi = Biquad()
+        var comp = Compressor(); var lim = Limiter()
+        hp.setHighPass(freq: s.highPassHz, sampleRate: 48000)
+        lo.setLowShelf(freq: s.lowShelfHz, gainDb: s.lowShelfDb, sampleRate: 48000)
+        hi.setHighShelf(freq: s.highShelfHz, gainDb: s.highShelfDb, sampleRate: 48000)
+        comp.configure(thresholdDb: s.compThresholdDb, ratio: s.compRatio, attackMs: s.compAttackMs,
+                       releaseMs: s.compReleaseMs, makeupDb: s.compMakeupDb, sampleRate: 48000)
+        lim.configure(ceilingDb: s.limiterCeilingDb, releaseMs: 50, sampleRate: 48000)
+        var buf = [Float](repeating: 0, count: 4800)
+        for i in 0..<buf.count { buf[i] = 0.3 * sinf(2 * Float.pi * 220 * Float(i) / 48000) }
+        var ref = buf
+        buf.withUnsafeMutableBufferPointer { chain.process($0.baseAddress!, count: $0.count) }
+        for i in 0..<ref.count {
+            var x = ref[i]
+            x = hp.process(x); x = lo.process(x); x = hi.process(x); x = comp.process(x); x = lim.process(x)
+            ref[i] = x
+        }
+        for i in 0..<buf.count {
+            XCTAssertEqual(buf[i], ref[i], accuracy: 1e-6, "clarity Off must equal the canonical chain @\(i)")
+        }
+    }
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -530,13 +581,22 @@ Replace the whole `configure(_:)` method with:
 ```swift
     public func configure(_ s: VoiceChainSettings) {
         let wasActive = active
+        let priorClarity = clarity
         enabled = s.enabled
         clarity = s.clarity
         active = s.enabled || s.clarity != .off
         guard active else { return }
         // Clean start when the chain becomes active (don't inherit frozen state).
-        // Switching between two *active* settings is intentionally bumpless.
-        if !wasActive { reset() }
+        // Switching between two *active* polish settings is intentionally bumpless.
+        if !wasActive {
+            reset()
+        } else if clarity != priorClarity {
+            // Clarity changed while the chain was already active (e.g. polish stays on and
+            // the user toggles Broadcast Voice Off→On, or changes level). The full reset
+            // above won't fire, so reset ONLY the clarity stages — otherwise stale
+            // presence/de-esser state would ring on re-enable and color the voice.
+            presence.reset(); deEsser.reset()
+        }
 
         if enabled {
             hp.setHighPass(freq: s.highPassHz, sampleRate: sampleRate)
@@ -861,6 +921,37 @@ Find the line describing `VoiceChain` + `Biquad` + `Dynamics` and replace it wit
   - `AudioProcessing/VoiceChain` + `Biquad` + `Dynamics` — post-DSP "voice polish" (high-pass → shelves → compressor → limiter) plus the optional **Broadcast Voice** clarity stages (presence peaking bell → subtractive `DeEsser`), driven by `ClarityLevel` and gated independently of the noise preset.
 ```
 
+Also update the authoritative **"Voice polish chain (Tier 2)"** section of `AGENTS.md` — it documents the pre-feature pipeline and is now stale. Replace its order bullet and its "Chain params…" bullet:
+
+Find:
+```markdown
+- `VoiceChain` (Core/AudioProcessing) runs AFTER `DeepFilterNetDSP` on the time-domain output, inside `AudioModel`'s render callback, only when `isAIEnabled`. Order: high-pass → low-shelf → high-shelf → compressor → limiter. The Limiter is last and hard-clamps to the ceiling — it is the final overflow guard.
+```
+Replace with:
+```markdown
+- `VoiceChain` (Core/AudioProcessing) runs AFTER `DeepFilterNetDSP` on the time-domain output, inside `AudioModel`'s render callback, only when `isAIEnabled`. Order: high-pass → low-shelf → high-shelf → **presence (peaking bell) → de-esser** → compressor → limiter. The Limiter is last and hard-clamps to the ceiling — it is the final overflow guard.
+```
+
+Find:
+```markdown
+- Chain params are a pure function of `VoicePreset.voiceChain` (NOT persisted per-stage). Effective enabled = `voicePolishEnabled && preset.voiceChain.enabled`. Meeting = off; Podcast/Tutorial/Custom = on. Only the `mv.voicePolish` master toggle is persisted (plus the Tier 1 `mv.preset`).
+```
+Replace with:
+```markdown
+- Chain params are a pure function of `VoicePreset.voiceChain` (NOT persisted per-stage) plus the orthogonal **Broadcast Voice** `ClarityLevel`. The chain runs when `(voicePolishEnabled && preset.voiceChain.enabled) || clarity != .off`. Meeting polish = off; Podcast/Tutorial/Custom = on; Broadcast Voice (presence + de-esser) layers on any mode. Persisted: `mv.voicePolish`, `mv.clarity` (plus the Tier 1 `mv.preset`). `configure` resets ALL stage state on inactive→active, and resets ONLY the clarity stages when `clarity` changes while the chain stays active (bumpless otherwise).
+```
+
+And update the **Real-time rule** bullet of the same section — it omits the new stages and still says reset happens "ONLY on the disabled→enabled transition", which is now false:
+
+Find:
+```markdown
+- **Real-time rule**: `VoiceChain.process` is allocation-free and per-sample; `configure(_:)` (coefficient recompute) runs on main only. State (`Biquad.z1/z2`, `Compressor.envDb`, `Limiter.gain`) carries across render buffers — never reset per buffer. `configure` resets state ONLY on the disabled→enabled transition (clean start); enabled→enabled preset switches are intentionally bumpless.
+```
+Replace with:
+```markdown
+- **Real-time rule**: `VoiceChain.process` is allocation-free and per-sample; `configure(_:)` (coefficient recompute) runs on main only. State (`Biquad.z1/z2` for the high-pass, shelves, and the `presence` bell; `Compressor.envDb`; `Limiter.gain`; and the `DeEsser`'s detector envelope + high-pass state) carries across render buffers — never reset per buffer. `configure` resets state in exactly two cases: a FULL reset on the inactive→active transition (clean start), and a clarity-stages-only reset (`presence` + `DeEsser`) when `ClarityLevel` changes while the chain stays active. Active→active switches with unchanged clarity are intentionally bumpless.
+```
+
 - [ ] **Step 4: `docs/knowledge/timeline1.md`** — append a dated changelog entry (match the file's existing entry format):
 
 ```markdown
@@ -899,6 +990,8 @@ git commit -m "docs: document Broadcast Voice (clarity) feature, vocab, and deci
 ## Manual smoke test (after all tasks)
 
 The headless suite cannot exercise the live audio path. After implementation, verify in the running app:
+
+> **Note:** Broadcast Voice (like all Voice Polish) only runs while **Noise Cancellation is ON** — the render callback calls `chain.process` inside the `if isAIEnabled` branch (`Sources/Core/AudioModel.swift:178`). Keep AI enabled for steps 3–6.
 
 1. `./install-app.sh` (or `swift run`), open the popover.
 2. Set a mode (e.g. Podcast). Speak — confirm normal cleaned voice.
