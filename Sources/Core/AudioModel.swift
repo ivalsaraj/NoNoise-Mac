@@ -747,10 +747,12 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         isSourceMicClipping = SmartLevelController.isSourceMicClipping(
             rawPeak: rawPeak, rawClipSampleCount: Int(tRawInputClipCount))
 
-        // Live HUD: output level (peak + CLIP reuse outputPeak / isOutputClipping above),
-        // AI-activity (read from the DSP scalar), and the LUFS snapshots.
+        // Live HUD: output level/peak/clip + LUFS update whenever audio flows (the
+        // existing recordOutputTelemetry runs regardless of AI, like Smart Level). The
+        // AI-activity bar is genuinely AI-specific, so it reads 0 when AI is off (the
+        // DSP scalar would otherwise freeze at its last value — no processHop runs).
         outputLevel = tOutputLevel
-        aiActivity = dspEngine.aiActivity
+        aiActivity = isAIEnabled ? dspEngine.aiActivity : 0
         momentaryLUFS = tMomentaryLUFS
         integratedLUFS = tIntegratedLUFS
         // Loudness normalization: compute a slew-limited make-up gain on main from the
