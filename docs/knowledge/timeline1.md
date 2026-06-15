@@ -5,7 +5,7 @@ Chronological log of notable changes. Newest on top.
 ### 2026-06-15 — Hot-mic ceiling fix (trimmed input meter, no Tutorial boost, full Smart Level floor)
 - **Input meter now reflects the trimmed signal.** `AudioModel.captureOutput` measured RMS on the
   pre-trim source, so lowering Input Volume (e.g. to 43%) left the meter pinned at max. Added
-  `SmartLevelController.applyInputVolumeAndMeasure` (one allocation-free pass: raw peak/clip →
+  `SmartLevelController.applyInputVolumeAndMeasure` (one allocation-free helper: raw scan →
   in-place trim → trimmed peak/RMS/hot) and `evaluateInputGuard` (pure mirror of the input-side
   meter + Smart Level contract). `publishMeterTelemetry` now derives `inputLevel`,
   `isInputNearCeiling`, `isSourceMicClipping`, and `consecutiveTrimmedHotTicks` from it; raw peak

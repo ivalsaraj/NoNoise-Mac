@@ -850,7 +850,8 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         let convertedFrames = Int(outputBuffer.frameLength)
         
         if convertedFrames > 0, let floatData = outputBuffer.floatChannelData?[0] {
-             // Trim in place and measure raw (source) + trimmed (NoNoise input) levels in one pass.
+             // Trim in place and measure raw (source) + trimmed (NoNoise input) levels in one
+             // allocation-free helper (raw scan → in-place trim → trimmed scan).
              // The meter must reflect the trimmed signal that actually enters ringBuffer.write,
              // while raw peak/clip still report physical/source clipping that trim cannot repair.
              let t = SmartLevelController.applyInputVolumeAndMeasure(

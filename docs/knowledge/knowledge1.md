@@ -8,7 +8,7 @@ for the must-read failure modes.
 ### [GOTCHA] 2026-06-15 — Input meter showed the raw source level, not the trimmed signal (@Valsaraj)
 - **Problem:** With Input Volume at 43% the input meter still read max, so the trim looked broken — especially in Tutorial mode, which also double-boosted (`outputGain 1.2` + `compMakeupDb 4`) and leaned on the limiter, sounding crushed.
 - **Root cause:** `AudioModel.captureOutput` computed `rms` in the pre-trim loop and published that raw value into `inputLevel`; the trim (`vDSP_vsmul`) was applied afterward, so the meter never reflected what NoNoise processes.
-- **Fix:** Measure raw + trimmed in one allocation-free pass (`SmartLevelController.applyInputVolumeAndMeasure`) and publish `trimmedRMS` as the meter; keep raw peak/clip for the separate source-clip warning. The input-side meter + Smart Level contract is a pure helper (`evaluateInputGuard`) so the raw-vs-trimmed split is unit-tested without constructing `AudioModel`.
+- **Fix:** Measure raw + trimmed in one allocation-free helper (`SmartLevelController.applyInputVolumeAndMeasure` — raw scan → in-place trim → trimmed scan) and publish `trimmedRMS` as the meter; keep raw peak/clip for the separate source-clip warning. The input-side meter + Smart Level contract is a pure helper (`evaluateInputGuard`) so the raw-vs-trimmed split is unit-tested without constructing `AudioModel`.
 - **Rule:** A meter must reflect the signal at the stage it claims to represent — publish post-trim values for the input meter; reserve raw-source telemetry for source-clipping warnings only.
 - **Files:** `Sources/Core/AudioModel.swift`, `Sources/Core/AudioProcessing/SmartLevelController.swift`.
 
