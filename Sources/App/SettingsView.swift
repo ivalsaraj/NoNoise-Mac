@@ -335,6 +335,12 @@ struct GuideView: View {
                 Divider()
                 StepRow(number: 4, title: "You're Live",
                         description: "Noise cancellation is ON by default. Toggle it any time from the menu bar. Your voice is now crystal clear!")
+                Divider()
+                StepRow(number: 5, title: "Clean the Guest (optional)",
+                        description: "To de-noise the person you HEAR: set the call app's SPEAKER/OUTPUT to a loopback device (BlackHole 2ch or Loopback). In NoNoise Mac Settings → Clean Incoming/Guest, pick that loopback as ‘Incoming from’ and your real speakers/headphones as ‘Hear on’.")
+                Divider()
+                StepRow(number: 6, title: "Still Want to Hear Raw Audio?",
+                        description: "Routing the call app into a loopback means its sound no longer reaches your speakers directly. NoNoise Mac re-plays the CLEANED audio to your chosen output, so you still hear the call — just de-noised. For raw monitoring too, use a macOS Multi-Output Device that includes both the loopback and your speakers.")
 
                 HStack {
                     Spacer()
