@@ -139,6 +139,24 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         }
     }
 
+    /// Loudness normalization (gentle auto-gain toward target). OFF by default —
+    /// default behavior is byte-for-byte unchanged. Guarded like the other knobs.
+    @Published public var loudnessNormEnabled: Bool = false {
+        didSet {
+            guard !isApplyingPreset else { return }
+            if !loudnessNormEnabled {            // reset to unity when off (no residual gain)
+                currentLoudnessGain = 1
+                voiceChain.setLoudnessGain(1.0)
+            }
+            applyVoiceChain()                    // (re)activate the chain if needed
+            persistSettings()
+        }
+    }
+    /// Target integrated loudness in LUFS (e.g. −14 YouTube/Spotify, −16 Apple Podcasts).
+    @Published public var loudnessTargetLUFS: Float = -14 {
+        didSet { guard !isApplyingPreset else { return }; persistSettings() }
+    }
+
     @Published public var rawInputPeak: Float = 0.0
     @Published public var trimmedInputPeak: Float = 0.0
     @Published public var outputPeak: Float = 0.0
@@ -146,6 +164,19 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     @Published public var isOutputClipping: Bool = false
     @Published public var isSourceMicClipping: Bool = false
     @Published public var smartLevelMessage: String?
+
+    // MARK: Live HUD telemetry (refreshed ~25 Hz by the existing meter timer).
+    // Output peak + clip reuse the Smart Level `outputPeak` / `isOutputClipping` above.
+    /// Post-processing output RMS level (0…~1) — the HUD output needle.
+    @Published public var outputLevel: Float = 0.0
+    /// Smoothed "AI working hard" signal 0…1 (energy-weighted per-bin suppression). UX hint.
+    @Published public var aiActivity: Float = 0.0
+    /// Momentary (400 ms) loudness in LUFS — the live needle.
+    @Published public var momentaryLUFS: Float = LoudnessMeter.silenceLUFS
+    /// Integrated (gated) loudness in LUFS since the meter last reset — the headline number.
+    @Published public var integratedLUFS: Float = LoudnessMeter.silenceLUFS
+    /// Fixed added latency in ms (ring-buffer target + one STFT frame), computed once.
+    @Published public var addedLatencyMs: Float = 0.0
 
     private var isApplyingPreset = false
 
@@ -162,6 +193,16 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     private var consecutiveOutputClipTicks = 0
     private var lastSmartLevelAdjustTime: Date?
 
+    // Live HUD / loudness telemetry. The meter is a value-type struct mutated ONLY on
+    // the render thread (recordOutputTelemetry); it is NEVER read from main — the render
+    // thread copies its getters into the t* scalars below, which the timer reads (no
+    // cross-thread struct access). Output peak/clip reuse tOutputPeak / tOutputClipCount.
+    private var loudnessMeter = LoudnessMeter()
+    private var tOutputLevel: Float = 0
+    private var tMomentaryLUFS: Float = LoudnessMeter.silenceLUFS
+    private var tIntegratedLUFS: Float = LoudnessMeter.silenceLUFS
+    private var currentLoudnessGain: Float = 1
+
     private enum PrefKey {
         static let preset = "mv.preset"
         static let strength = "mv.suppressionStrength"
@@ -171,6 +212,8 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         static let clarity = "mv.clarity"
         static let inputVolume = "mv.inputVolume"
         static let smartLevel = "mv.smartLevel"
+        static let loudnessNorm = "mv.loudnessNorm"
+        static let loudnessTarget = "mv.loudnessTarget"
     }
 
     public struct DeviceStruct: Identifiable {
@@ -258,6 +301,9 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         resolveVirtualMicLifecycle()   // arm the in-use listener + sync initial state
         installHardwareDeviceListener()
         loadSettings()
+        // Fixed pipeline latency: ring-buffer target (2400 samples) + one STFT frame
+        // (960 samples) @ 48 kHz. Reported as the "added latency" readout, not measured.
+        addedLatencyMs = Float(2400 + 960) / 48000.0 * 1000.0   // = 70 ms
         startMeterTimer()
     }
 
@@ -302,6 +348,7 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         var s = selectedPreset.voiceChain
         s.enabled = s.enabled && voicePolishEnabled
         s.clarity = clarityLevel
+        s.loudnessActive = loudnessNormEnabled   // activate the chain for normalization
         voiceChain.configure(s)
     }
 
@@ -328,6 +375,8 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         d.set(clarityLevel.rawValue, forKey: PrefKey.clarity)
         d.set(inputVolumeValue, forKey: PrefKey.inputVolume)
         d.set(smartLevelEnabled, forKey: PrefKey.smartLevel)
+        d.set(loudnessNormEnabled, forKey: PrefKey.loudnessNorm)
+        d.set(loudnessTargetLUFS, forKey: PrefKey.loudnessTarget)
     }
 
     private func loadSettings() {
@@ -352,6 +401,9 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         inputVolumeValue = d.object(forKey: PrefKey.inputVolume) != nil
             ? SmartLevelController.clampInputVolume(d.float(forKey: PrefKey.inputVolume)) : 1.0
         smartLevelEnabled = d.object(forKey: PrefKey.smartLevel) as? Bool ?? false
+        loudnessNormEnabled = d.object(forKey: PrefKey.loudnessNorm) as? Bool ?? false
+        loudnessTargetLUFS  = d.object(forKey: PrefKey.loudnessTarget) != nil
+            ? d.float(forKey: PrefKey.loudnessTarget) : -14
         selectedPreset = preset
         isApplyingPreset = false
         if let p = preset.parameters {  // non-custom: preset defines the values
@@ -695,6 +747,23 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         isSourceMicClipping = SmartLevelController.isSourceMicClipping(
             rawPeak: rawPeak, rawClipSampleCount: Int(tRawInputClipCount))
 
+        // Live HUD: output level (peak + CLIP reuse outputPeak / isOutputClipping above),
+        // AI-activity (read from the DSP scalar), and the LUFS snapshots.
+        outputLevel = tOutputLevel
+        aiActivity = dspEngine.aiActivity
+        momentaryLUFS = tMomentaryLUFS
+        integratedLUFS = tIntegratedLUFS
+        // Loudness normalization: compute a slew-limited make-up gain on main from the
+        // integrated-LUFS snapshot and push it to the chain (lock-free scalar). When the
+        // meter has no measurement (silence below the gate), the gain is held — no pumping.
+        if loudnessNormEnabled {
+            let g = LoudnessMeter.normalizationGain(
+                measuredLUFS: tIntegratedLUFS, targetLUFS: loudnessTargetLUFS,
+                currentGain: currentLoudnessGain, maxDb: 12, slewDb: 1)  // ~1 dB/tick → smooth
+            currentLoudnessGain = g
+            voiceChain.setLoudnessGain(g)
+        }
+
         let trimmedWasHot = SmartLevelController.isNearCeiling(trimmedPeak) || trimmedHotCount > 0
         consecutiveTrimmedHotTicks = SmartLevelController.advanceHotTicks(
             current: consecutiveTrimmedHotTicks, wasHot: trimmedWasHot)
@@ -706,6 +775,7 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         tRawInputPeak = 0
         tTrimmedInputPeak = 0
         tOutputPeak = 0
+        tOutputLevel = 0
         tOutputClipCount = 0
         tRawInputClipCount = 0
         tTrimmedInputHotCount = 0
@@ -755,13 +825,22 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     private func recordOutputTelemetry(_ data: UnsafePointer<Float>, count: Int) {
         var peak = tOutputPeak
         var clipCount = tOutputClipCount
+        var sumSq: Float = 0
         for i in 0..<count {
-            let mag = abs(data[i])
+            let s = data[i]
+            let mag = abs(s)
             peak = max(peak, mag)
             if mag >= SmartLevelController.clipThreshold { clipCount &+= 1 }
+            sumSq += s * s
+            loudnessMeter.process(s)   // K-weighted BS.1770 loudness + sample-peak (render thread only)
         }
         tOutputPeak = peak
         tOutputClipCount = clipCount
+        tOutputLevel = sqrtf(sumSq / Float(max(count, 1)))
+        // Snapshot the meter getters into plain scalars (render thread only) so the UI
+        // timer never touches the meter struct cross-thread.
+        tMomentaryLUFS = loudnessMeter.momentaryLUFS
+        tIntegratedLUFS = loudnessMeter.integratedLUFS
     }
 
     
