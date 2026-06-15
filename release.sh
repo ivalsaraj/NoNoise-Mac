@@ -103,7 +103,15 @@ if [ ! -f "$PLIST_FILE" ]; then
 fi
 
 echo "📝 Updating version in $PLIST_FILE"
-BUILD_NUMBER=$(echo "$VERSION" | cut -d. -f1-2 | tr '.' '')
+# CFBundleVersion must be a MONOTONIC integer for Sparkle (see scripts/version-from-tag.sh).
+# The old "MAJOR.MINOR digits" formula ignored PATCH and wasn't monotonic across minors.
+if VERS=$(./scripts/version-from-tag.sh "$TAG"); then
+  eval "$VERS"   # sets short (== $VERSION) and build
+  BUILD_NUMBER="$build"
+else
+  echo "❌ Error: version-from-tag.sh rejected $TAG"
+  exit 1
+fi
 
 if command -v plutil &> /dev/null; then
   plutil -replace CFBundleShortVersionString -string "$VERSION" "$PLIST_FILE"
