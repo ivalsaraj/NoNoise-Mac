@@ -11,6 +11,7 @@ struct ContentView: View {
             statusCard
             modeCard
             clarityCard
+            mouthNoiseCard
             devicesCard
             driverStatusRow
             footer
@@ -138,6 +139,22 @@ struct ContentView: View {
             cardLabel("Broadcast Voice", systemImage: "waveform.path.ecg")
             Picker("", selection: $audioModel.clarityLevel) {
                 ForEach(ClarityLevel.allCases) { level in
+                    Text(level.label).tag(level)
+                }
+            }
+            .labelsHidden()
+            .pickerStyle(.segmented)
+        }
+        .nnCard()
+    }
+
+    // MARK: - Mouth Noise finishers
+
+    private var mouthNoiseCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            cardLabel("Mouth Noise", systemImage: "mouth.fill")
+            Picker("", selection: $audioModel.mouthNoiseLevel) {
+                ForEach(MouthNoiseLevel.allCases) { level in
                     Text(level.label).tag(level)
                 }
             }
