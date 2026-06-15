@@ -2,6 +2,11 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Stable release after successful main CI
+- Updated `.github/workflows/release.yml` so a successful `CI` workflow on `main` automatically
+  rebuilds, bundles, and uploads the latest `NoNoiseMac.app`, `NoNoiseMacCLI`, `NoNoiseMic.driver`,
+  and checksums to the `stable` GitHub Release. Versioned `v*` tag releases remain supported.
+
 ### 2026-06-15 — NoNoise logo in menu bar and popover
 - Replaced the SF Symbol waveform used in the menu-bar item and popover status card with a shared
   NoNoise mark, so the visible app identity matches the NoNoise logo. The menu-bar variant uses a

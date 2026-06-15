@@ -54,10 +54,11 @@ The app is a menu-bar utility (`LSUIElement`); **AI noise cancellation is ON by 
 
 ## CI & releases
 `.github/workflows/ci.yml` runs on pushes to `main` and pull requests targeting `main`; it only
-builds and tests. It does NOT publish artifacts or create releases. `.github/workflows/release.yml`
-publishes release assets only for `v*` tags whose commit is contained in `origin/main` (or manual
-dispatch with such a tag). Release assets are zipped `NoNoiseMac.app`, `NoNoiseMacCLI`,
-`NoNoiseMic.driver`, and `SHA256SUMS`.
+builds and tests. `.github/workflows/release.yml` automatically updates the `stable` GitHub Release
+after CI succeeds on `main`, and also publishes versioned release assets for `v*` tags whose commit
+is contained in `origin/main` (or manual dispatch with such a tag). Stable assets use fixed names
+(`NoNoiseMac.app.zip`, `NoNoiseMacCLI`, `NoNoiseMic.driver.zip`, `SHA256SUMS`) so the release page
+always points at the latest successful `main` build; versioned releases use tag-specific filenames.
 
 ## Entitlements & signing
 `bundle.sh` codesigns with `Resources/NoNoiseMac.entitlements`, kept **intentionally minimal** —
