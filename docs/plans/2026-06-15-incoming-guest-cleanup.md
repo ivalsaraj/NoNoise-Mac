@@ -8,7 +8,7 @@
 
 **Tech Stack:** Swift 5.9, SwiftUI, Swift Package Manager, XCTest, AVFoundation/CoreAudio (capture + playback), CoreML/Accelerate (the existing `DeepFilterNetDSP`, unchanged).
 
-**GitHub Issue:** _(create via `github-issue-lifecycle` Phase 1 before execution; embed `#N — URL` here)_
+**GitHub Issue:** #6 — https://github.com/ivalsaraj/NoNoise-Mac/issues/6
 
 **Execution location:** Run all commands from the package root — the directory that contains `Package.swift`. All paths in this plan are relative to that root.
 
