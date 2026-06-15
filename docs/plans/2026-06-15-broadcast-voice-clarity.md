@@ -71,7 +71,7 @@ Expected: `Switched to a new branch 'feat/broadcast-voice-clarity'`. Throughout 
 
 ## Task 1: `Biquad.setPeaking` — presence bell — TDD
 
-A wide-Q RBJ peaking EQ for the presence lift. The test proves the identity-preserving property: a peaking bell has **unity gain at DC** (it cannot alter the vocal fundamental/body), boosts at its center, and leaves a low tone unchanged.
+A wide-Q RBJ peaking EQ for the presence lift. The test proves the identity-preserving property: a peaking bell has **unity gain at DC and Nyquist** (it cannot alter the vocal fundamental/body or the spectral extremes), boosts at its center, and leaves a low tone unchanged.
 
 **Files:**
 - Modify: `Sources/Core/AudioProcessing/Biquad.swift` (add one method)
@@ -108,6 +108,25 @@ final class BroadcastVoiceTests: XCTestCase {
         b.setPeaking(freq: 4500, gainDb: 6, sampleRate: 48000, q: 0.7)
         let r = sineRMS(freq: 180, amp: 0.3, n: 9600, through: &b)
         XCTAssertEqual(r.outRMS / r.inRMS, 1.0, accuracy: 0.05, "low end must be essentially untouched")
+    }
+
+    /// The bell must also leave Nyquist (Fs/2) at unity gain — a peaking EQ only shapes the
+    /// band around its center, never the spectral extremes. A sine at exactly Nyquist is
+    /// `cos(πn) = (-1)^n`, so probe with an alternating ±amp signal (a `sinf` Nyquist tone
+    /// would be identically zero). Measured over the second half to skip the settling transient.
+    func testPeakingHasUnityNyquistGain() {
+        var b = Biquad()
+        b.setPeaking(freq: 4500, gainDb: 6, sampleRate: 48000, q: 0.7)
+        let amp: Float = 0.3
+        let n = 9600, half = 4800
+        var inSq: Float = 0, outSq: Float = 0
+        for i in 0..<n {
+            let x: Float = (i % 2 == 0) ? amp : -amp
+            let y = b.process(x)
+            if i >= half { inSq += x * x; outSq += y * y }
+        }
+        XCTAssertEqual(sqrtf(outSq / Float(half)), sqrtf(inSq / Float(half)), accuracy: 1e-3,
+                       "presence bell must not change the Nyquist/high extreme")
     }
 
     // MARK: - Helpers
@@ -159,7 +178,7 @@ In `Sources/Core/AudioProcessing/Biquad.swift`, add this method immediately afte
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `swift test --filter BroadcastVoiceTests`
-Expected: 3 tests PASS.
+Expected: 4 tests PASS.
 
 - [ ] **Step 5: Commit**
 

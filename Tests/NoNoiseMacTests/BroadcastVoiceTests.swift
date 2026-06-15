@@ -28,6 +28,25 @@ final class BroadcastVoiceTests: XCTestCase {
         XCTAssertEqual(r.outRMS / r.inRMS, 1.0, accuracy: 0.05, "low end must be essentially untouched")
     }
 
+    /// The bell must also leave Nyquist (Fs/2) at unity gain — a peaking EQ only shapes the
+    /// band around its center, never the spectral extremes. A sine at exactly Nyquist is
+    /// `cos(πn) = (-1)^n`, so probe with an alternating ±amp signal (a `sinf` Nyquist tone
+    /// would be identically zero). Measured over the second half to skip the settling transient.
+    func testPeakingHasUnityNyquistGain() {
+        var b = Biquad()
+        b.setPeaking(freq: 4500, gainDb: 6, sampleRate: 48000, q: 0.7)
+        let amp: Float = 0.3
+        let n = 9600, half = 4800
+        var inSq: Float = 0, outSq: Float = 0
+        for i in 0..<n {
+            let x: Float = (i % 2 == 0) ? amp : -amp
+            let y = b.process(x)
+            if i >= half { inSq += x * x; outSq += y * y }
+        }
+        XCTAssertEqual(sqrtf(outSq / Float(half)), sqrtf(inSq / Float(half)), accuracy: 1e-3,
+                       "presence bell must not change the Nyquist/high extreme")
+    }
+
     // MARK: - DeEsser
 
     /// Disabled de-esser is a perfect identity for any sample.
