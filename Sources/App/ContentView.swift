@@ -36,7 +36,7 @@ struct ContentView: View {
             }
             Spacer()
             Button {
-                WindowManager.openSettings(model: audioModel)
+                WindowManager.openSettings(model: audioModel, hotkeyManager: hotkeyManager)
             } label: {
                 Image(systemName: "gearshape.fill")
                     .font(.system(size: 14))
@@ -220,7 +220,7 @@ struct ContentView: View {
     private var footer: some View {
         HStack(spacing: 8) {
             Button {
-                WindowManager.openSettings(model: audioModel)
+                WindowManager.openSettings(model: audioModel, hotkeyManager: hotkeyManager)
             } label: {
                 Label("Settings", systemImage: "slider.horizontal.3")
             }
@@ -304,9 +304,9 @@ extension View {
 class WindowManager {
     static var settingsWindow: NSWindow?
 
-    static func openSettings(model: AudioModel) {
+    static func openSettings(model: AudioModel, hotkeyManager: HotkeyManager) {
         if settingsWindow == nil {
-            let view = SettingsView(audioModel: model)
+            let view = SettingsView(audioModel: model, hotkeyManager: hotkeyManager)
             let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 460),
                                 styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                                 backing: .buffered, defer: false)

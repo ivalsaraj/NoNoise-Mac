@@ -3,12 +3,18 @@ import Core
 
 struct SettingsView: View {
     @ObservedObject var audioModel: AudioModel
+    @ObservedObject var hotkeyManager: HotkeyManager
 
     var body: some View {
         TabView {
             GeneralSettingsView(audioModel: audioModel)
                 .tabItem {
                     Label("General", systemImage: "slider.horizontal.3")
+                }
+
+            HotkeySettingsView(manager: hotkeyManager)
+                .tabItem {
+                    Label("Hotkeys", systemImage: "keyboard")
                 }
 
             GuideView()
@@ -265,6 +271,180 @@ struct GeneralSettingsView: View {
             control()
             Text(help).font(.caption).foregroundColor(.secondary)
         }
+    }
+}
+
+// MARK: - Hotkey Settings
+
+struct HotkeySettingsView: View {
+    @ObservedObject var manager: HotkeyManager
+    @State private var rebindingAction: HotkeyActionID?
+    @State private var isListeningForKey: Bool = false
+
+    private let actionLabels: [(HotkeyActionID, String)] = [
+        (.toggleAI,        "Toggle Noise Cancellation"),
+        (.bypassMomentary, "A/B Bypass (hold for raw)"),
+        (.bypassToggle,    "A/B Bypass (toggle)"),
+        (.presetNext,      "Preset → Next"),
+        (.presetPrev,      "Preset → Previous"),
+        (.clarityNext,     "Broadcast Voice → Next Level"),
+        (.gainUp,          "Output Gain +"),
+        (.gainDown,        "Output Gain −"),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Global Hotkeys")
+                .font(.title3).fontWeight(.semibold)
+                .padding(.bottom, 12)
+
+            ForEach(actionLabels, id: \.0) { (id, label) in
+                hotkeyRow(id: id, label: label)
+                Divider()
+            }
+
+            if !manager.conflictedActions.isEmpty {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundColor(.orange)
+                    Text("Some hotkeys conflict with another app. Rebind them or change the conflicting app's shortcuts.")
+                        .font(.caption).foregroundColor(.secondary)
+                }
+                .padding(.top, 10)
+            }
+        }
+        .padding()
+        .sheet(item: $rebindingAction) { id in
+            RebindSheet(actionID: id, manager: manager)
+        }
+    }
+
+    private func hotkeyRow(id: HotkeyActionID, label: String) -> some View {
+        HStack {
+            Text(label).frame(maxWidth: .infinity, alignment: .leading)
+            Spacer()
+            if manager.conflictedActions.contains(id) {
+                Image(systemName: "exclamationmark.circle.fill").foregroundColor(.orange)
+                    .help("This combo is in use by another app")
+            }
+            if let b = manager.bindings[id] {
+                Text(hotkeyDisplayString(b))
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundColor(.secondary)
+            } else {
+                Text("—").foregroundColor(.secondary)
+            }
+            Button("Edit") { rebindingAction = id }
+                .controlSize(.small)
+        }
+        .padding(.vertical, 6)
+    }
+
+    private func hotkeyDisplayString(_ b: HotkeyBinding) -> String {
+        var s = ""
+        // b.modifiers is a plain UInt32 (Core HotkeyModifier bits) — test bits directly.
+        let m = b.modifiers
+        if m & HotkeyModifier.control.rawValue != 0 { s += "⌃" }
+        if m & HotkeyModifier.option.rawValue  != 0 { s += "⌥" }
+        if m & HotkeyModifier.shift.rawValue   != 0 { s += "⇧" }
+        if m & HotkeyModifier.command.rawValue != 0 { s += "⌘" }
+        // Map common kVK codes to printable glyphs (non-exhaustive — covers the default set).
+        let keyGlyphs: [UInt32: String] = [
+            0x2D: "N", 0x0B: "B", 0x1E: "]", 0x21: "[", 0x08: "C",
+            0x18: "=", 0x1B: "-",
+        ]
+        s += keyGlyphs[b.keyCode] ?? "?\(b.keyCode)"
+        return s
+    }
+}
+
+// HotkeyActionID is declared in Core; add Identifiable conformance here (App-only, for SwiftUI).
+extension HotkeyActionID: Identifiable {
+    public var id: String { rawValue }
+}
+
+// MARK: - Rebind sheet
+
+/// Key-capture sheet: wait for the user to press a key combo, then commit it.
+/// Uses an invisible NSView subclass that overrides keyDown to capture the event.
+struct RebindSheet: View {
+    let actionID: HotkeyActionID
+    @ObservedObject var manager: HotkeyManager
+    @Environment(\.dismiss) var dismiss
+    @State private var capturedBinding: HotkeyBinding?
+    @State private var conflict: Bool = false
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Press a new key combo for:")
+            Text(actionID.id.replacingOccurrences(of: "mv.hotkey.", with: ""))
+                .font(.headline)
+            KeyCaptureView { binding in
+                capturedBinding = binding
+                conflict = false
+            }
+            .frame(width: 200, height: 44)
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.accentColor, lineWidth: 1.5))
+            if let b = capturedBinding {
+                Text("New: \(b.encoded)").font(.caption).foregroundColor(.secondary)
+            }
+            if conflict {
+                Text("That combo is in use by another app.").foregroundColor(.orange).font(.caption)
+            }
+            HStack {
+                Button("Cancel") { dismiss() }
+                Spacer()
+                Button("Save") {
+                    if let b = capturedBinding {
+                        let ok = manager.rebind(action: actionID, to: b)
+                        if ok { dismiss() } else { conflict = true }
+                    }
+                }
+                .disabled(capturedBinding == nil)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 340)
+    }
+}
+
+/// NSViewRepresentable that captures the next key-down event and reports it
+/// as a `HotkeyBinding` via the callback. The view becomes first responder
+/// on appear to receive key events without Accessibility permission.
+struct KeyCaptureView: NSViewRepresentable {
+    var onCapture: (HotkeyBinding) -> Void
+
+    func makeNSView(context: Context) -> _KeyCaptureNSView {
+        let v = _KeyCaptureNSView()
+        v.onCapture = onCapture
+        return v
+    }
+
+    func updateNSView(_ nsView: _KeyCaptureNSView, context: Context) {
+        nsView.onCapture = onCapture
+    }
+}
+
+final class _KeyCaptureNSView: NSView {
+    var onCapture: ((HotkeyBinding) -> Void)?
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        window?.makeFirstResponder(self)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        // Ignore bare modifiers; wait for a real key code.
+        guard event.keyCode != 0xFF else { return }
+        // Adapt NSEvent.ModifierFlags → plain UInt32 mask at the App boundary. The relevant bits
+        // (command/option/shift/control) share the same raw values as Core's HotkeyModifier, so
+        // the masked rawValue maps 1:1.
+        let masked = event.modifierFlags.intersection([.command, .option, .shift, .control])
+        let binding = HotkeyBinding(keyCode: UInt32(event.keyCode),
+                                    modifiers: UInt32(masked.rawValue))
+        onCapture?(binding)
     }
 }
 
