@@ -26,12 +26,15 @@ Chronological log of notable changes. Newest on top.
 - UI: segmented picker in Settings and the popover. Design invariant — identity at rest — enforced
   structurally and proven by XCTest.
 
-### 2026-06-15 — Hot mic ceiling fix
-- Input metering now reflects the trimmed NoNoise input signal instead of raw pre-trim RMS, so
-  lowering Input Volume visibly lowers the meter while raw mic clipping still shows a separate
-  source-warning state.
-- Tutorial mode no longer adds hidden loudness by default: output gain is unity and compressor
-  makeup is zero. Smart Level can now protect down to the manual 25% Input Volume floor.
+### 2026-06-15 — Hot-mic ceiling fix (trimmed input meter, no Tutorial boost, full Smart Level floor)
+- **Input meter now reflects the trimmed signal.** `AudioModel.captureOutput` measured RMS on the
+  pre-trim source, so lowering Input Volume left the meter pinned at max. Added
+  `SmartLevelController.applyInputVolumeAndMeasure` (one allocation-free helper: raw scan →
+  in-place trim → trimmed peak/RMS/hot) and `evaluateInputGuard` (pure mirror of the input-side
+  meter + Smart Level contract).
+- **Tutorial preset no longer hides a boost.** `outputGain` 1.2 → 1.0 and `compMakeupDb` 4 → 0.
+- **Smart Level auto floor 35% → 25%.** `minAutoInputVolume = minInputVolume`, so protective
+  auto-trim can reach the same floor as the manual Input Volume control. Still never auto-boosts.
 
 ### 2026-06-15 — Clean Incoming / Guest (Phase 1) shipped
 - Added `IncomingCleanupEngine` — a SECOND, independent capture→clean→play pipeline that

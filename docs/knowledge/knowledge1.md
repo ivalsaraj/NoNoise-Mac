@@ -123,6 +123,13 @@ for the must-read failure modes.
   through that machine (or be disabled while the override is active) — a direct binding is a back door.
 - **Files:** `Sources/App/ContentView.swift`, `Sources/App/ActionDispatcher.swift`
 
+### [GOTCHA] 2026-06-15 — Input meter showed the raw source level, not the trimmed signal (@Valsaraj)
+- **Problem:** With Input Volume at 43% the input meter still read max, so the trim looked broken — especially in Tutorial mode, which also double-boosted (`outputGain 1.2` + `compMakeupDb 4`) and leaned on the limiter, sounding crushed.
+- **Root cause:** `AudioModel.captureOutput` computed `rms` in the pre-trim loop and published that raw value into `inputLevel`; the trim (`vDSP_vsmul`) was applied afterward, so the meter never reflected what NoNoise processes.
+- **Fix:** Measure raw + trimmed in one allocation-free helper (`SmartLevelController.applyInputVolumeAndMeasure` — raw scan → in-place trim → trimmed scan) and publish `trimmedRMS` as the meter; keep raw peak/clip for the separate source-clip warning. The input-side meter + Smart Level contract is a pure helper (`evaluateInputGuard`) so the raw-vs-trimmed split is unit-tested without constructing `AudioModel`.
+- **Rule:** A meter must reflect the signal at the stage it claims to represent — publish post-trim values for the input meter; reserve raw-source telemetry for source-clipping warnings only.
+- **Files:** `Sources/Core/AudioModel.swift`, `Sources/Core/AudioProcessing/SmartLevelController.swift`.
+
 ### [DECISION] 2026-06-15 — Input Volume is app-level pre-DSP trim, not hardware volume (@Valsaraj)
 - **Problem:** Hot mics clip or sound crushed/harsh after NoNoise processing; users expect a macOS-like "Input Volume" control.
 - **Decision:** Ship **Input Volume** as an app-level scalar applied after conversion and before the ring buffer (`mv.inputVolume`). Do not write macOS system/hardware input volume — keeps behavior reversible, per-app, and consistent across USB/BT/built-in mics. Pair with optional **Smart Level** that only *reduces* gain when trimmed peaks repeatedly hit ~0.98; never auto-boosts. The visible input meter shows trimmed NoNoise input RMS, while raw peak remains a source-clipping warning.

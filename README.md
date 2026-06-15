@@ -69,6 +69,9 @@ Everything happens **on your device**. Your audio never leaves your Mac.
 
 Your selection (and any fine-tuning) is remembered between launches.
 
+Tutorial is tuned to sound clean and present for screen recordings; it does **not** add
+output gain by default. If your mic is quiet, raise **Output Gain** manually.
+
 ### 🎙️ Broadcast Voice
 
 An optional clarity enhancement layered on top of any mode. It pairs a gentle, wide presence lift with an automatic de-esser, so added "air" never becomes harsh sibilance. **Off** by default; **Low / Medium / High** increase the effect. It is designed to be transparent — a peaking bell with unity gain at the low end and a de-esser that only acts on real "ess" sounds — so it preserves the identity of your voice.

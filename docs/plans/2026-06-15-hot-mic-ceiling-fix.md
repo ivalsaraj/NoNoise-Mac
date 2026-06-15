@@ -476,3 +476,29 @@ Then update/open the relevant PR with:
 - Root cause summary.
 - Verification commands.
 - Note that macOS hardware input volume is not changed by this fix.
+
+## Post-Implementation Amendments
+
+Applied during execution to keep this plan aligned with the shipped code:
+
+- **AGENTS.md was also updated (plan gap).** Tasks 1–4 only listed `README.md` + this plan as docs,
+  but `AGENTS.md` → "Input Volume & Smart Level (hot-mic guard)" stated `Floor: 35% input` and did
+  not say the input meter reflects the trimmed signal. Both were stale after Tasks 1 and 3, so that
+  section was updated (input meter = trimmed `inputLevel` via `applyInputVolumeAndMeasure` /
+  `evaluateInputGuard`; floor now `25% input` = `minAutoInputVolume = minInputVolume`). Root cause:
+  the plan's doc file lists didn't trace the behavior change into the evergreen project guide.
+- **Knowledge base updated** per the compounding protocol: a `[GOTCHA]` (meter showed raw, not
+  trimmed) in `docs/knowledge/knowledge1.md` and a changelog entry in `docs/knowledge/timeline1.md`.
+- **Execution shape:** implemented in a dedicated worktree on branch `fix/hot-mic-ceiling` (based on
+  `feat/input-volume-smart-level`) as five atomic commits (Task 1, Task 2, Task 3, docs, and a
+  post-review doc-precision fix) instead of the single squashed commit in Task 4 Step 4, then Codex
+  code review, then a PR to `main`.
+- **Verification run:** `swift build`, `swift test` (89 pure tests green), `swift build -c release
+  --arch arm64` — all green.
+- **Codex code review (gpt-5.5):** APPROVED. Round 1 found 0 blocking issues and 1 MINOR — the
+  phrase "one allocation-free pass" implied a single fused loop, but `applyInputVolumeAndMeasure`
+  does raw scan → optional in-place vDSP trim → trimmed scan. Promoted and fixed (call-site comment +
+  `AGENTS.md` + `timeline1.md` + `knowledge1.md` now say "one allocation-free helper (raw scan →
+  in-place trim → trimmed scan)"); the helper docstring was already accurate. Round 2 re-review:
+  APPROVED, LOW risk, no regressions. Plan gap: the plan's doc wording itself carried the imprecise
+  "one pass" phrasing.
