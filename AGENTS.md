@@ -145,6 +145,70 @@ Do not add entitlements beyond these two without a measured, documented need.
 - Chain params are a pure function of `VoicePreset.voiceChain` (NOT persisted per-stage) plus the orthogonal **Broadcast Voice** `ClarityLevel`. The chain runs when `(voicePolishEnabled && preset.voiceChain.enabled) || clarity != .off`. Meeting polish = off; Podcast/Tutorial/Custom = on; Broadcast Voice (presence + de-esser) layers on any mode. Persisted: `mv.voicePolish`, `mv.clarity` (plus the Tier 1 `mv.preset`). `configure` resets ALL stage state on inactive→active, and resets ONLY the clarity stages when `clarity` changes while the chain stays active (bumpless otherwise).
 - `applyVoiceChain()` reconfigures the chain on every preset transition (explicit pick AND the auto-flip to Custom) and on toggle/load — never from the per-tick knob path more than once per transition. `voicePolishEnabled.didSet` is guarded by `!isApplyingPreset` exactly like the Tier 1 knobs.
 
+## Control layer (Tier 4) — `Sources/Core/ControlLayer.swift`, `Sources/App/ActionDispatcher.swift`, `Sources/App/HotkeyManager.swift`
+
+- **Core/App split (so it stays testable):** the PURE models — `ControlAction` (URL/CLI parsers
+  + gain constants), `HotkeyActionID`, `HotkeyBinding`, `HotkeyModifier`, `ControlState`, and the
+  `ControlReducer` state machine — live in `Sources/Core/ControlLayer.swift` and import only
+  `Foundation`. The test target depends on `Core` only, so the REAL dispatch logic (bypass
+  transitions, desired-vs-effective AI, gain clamping, cycling) is unit-tested via `ControlReducer`
+  (`Tests/NoNoiseMacTests/ControlLayerTests.swift`) WITHOUT constructing `AudioModel`.
+- `ActionDispatcher` (@MainActor, App) is a thin adapter: it reads a `ControlState` snapshot from
+  `AudioModel`, runs `ControlReducer.reduce`, and applies the returned `[ControlMutation]`. It is the
+  single dispatch point for all control actions. It is NOT headless-testable (depends on `AudioModel`
+  → CoreAudio).
+- **NEVER blanket-write AudioModel fields from the dispatcher.** The reducer returns an explicit
+  `[ControlMutation]` (`.setAIEffective` / `.setPreset` / `.setClarity` / `.setGain`) naming EXACTLY
+  what the action changed; the adapter applies ONLY those. This is load-bearing: `AudioModel`'s knob
+  `didSet`s have side effects — writing `outputGainValue` (or suppression/atten) calls
+  `onKnobChanged()` which flips a non-`.custom` preset to `.custom`; writing `selectedPreset` re-applies
+  the preset's own gain/atten via `applyPreset`. A blanket "write every field back" would (a) demote
+  the active preset to Custom on `.toggleAI`, and (b) override a just-applied preset's gain with the
+  pre-change value on `.presetNext`. So `.toggleAI`/bypass emit only `.setAIEffective`; `.presetNext/
+  prev` emit only `.setPreset` (no trailing gain write); `.gainUp/down` emit `.setGain` (the
+  `onKnobChanged()` → `.custom` flip is the INTENDED manual-edit behavior).
+- **A/B bypass = desired-vs-effective AI.** `desiredAIEnabled` is the user's intended AI on/off
+  ignoring bypass; effective = `desiredAI && !(momentary || toggle bypass)`. `.toggleAI` ALWAYS
+  flips `desiredAI` (even while bypassed); on bypass exit, `AudioModel.isAIEnabled` follows the
+  current desired value. Firing toggle-AI mid-bypass therefore does NOT turn AI back on against the
+  bypass. Bypass state is session-only (never persisted); `desiredAI` mirrors the persisted
+  `isAIEnabled`. This is the only place `isAIEnabled` is written from outside its `didSet` path.
+- **The popover master toggle binds to `dispatcher.aiToggleBinding`, NOT `$audioModel.isAIEnabled`,
+  and is `.disabled(dispatcher.isBypassed)`.** A direct binding would let the user flip the UI toggle
+  during bypass and write `isAIEnabled = true` straight onto the model, re-enabling AI against an
+  active bypass (the desired-vs-effective rule's state hole). Routing through the dispatcher uses the
+  same `.toggleAI` path; disabling it during bypass closes the hole (desired AI is still changeable by
+  hotkey while bypassed).
+- `HotkeyManager` (@MainActor, App) uses Carbon `RegisterEventHotKey` + `InstallEventHandler`.
+  **Do NOT switch to `NSEvent.addGlobalMonitorForEvents`** — that requires Accessibility permission,
+  violating the minimal-entitlement policy (AGENTS.md "Entitlements & signing"). Carbon hotkeys work
+  with the existing two entitlements and no permission prompt.
+- **Hotkeys register at app launch**, in `NoNoiseMacApp.init()` (HotkeyManager held on `@StateObject`),
+  NOT in `ContentView.onAppear` — a `MenuBarExtra`'s content view isn't instantiated until the
+  popover opens, so onAppear-registration would leave hotkeys dead until first click.
+- **`appDelegate.dispatcher` is wired in `NoNoiseMacApp.init()`, NOT `ContentView.onAppear`** (same
+  MenuBarExtra timing reason). The `@NSApplicationDelegateAdaptor` wrapped value exists before the
+  `init()` body runs, so the assignment is valid there. Wiring in `onAppear` would leave the
+  AppDelegate's `application(_:open:)` URL fallback with a nil dispatcher until the popover first
+  opened — a bundled `.app` would drop `open nonoisemac://…` fired before any popover open.
+- **`EventHotKeyID.id` is deterministic** (`HotkeyActionID.allCases` index + 1), NOT
+  `rawValue.hashValue` — Swift's `hashValue` is randomized per process and would make the fired ID
+  un-matchable back to its action.
+- The Carbon C callback extracts the `EventHotKeyID` synchronously, then hops to the main actor via
+  `Task { @MainActor in … }` before touching `HotkeyManager`/`ActionDispatcher` (both `@MainActor`).
+- `HotkeyBinding` stores a plain `UInt32` modifier mask (Core `HotkeyModifier` bits, which equal the
+  AppKit `NSEvent.ModifierFlags` device-independent bits). Core never imports AppKit; `HotkeyManager`
+  / `KeyCaptureView` adapt `NSEvent.ModifierFlags` ↔ `UInt32` at the App boundary. Encodes as
+  `"<keyCode>:<modifierMask>"`.
+- Bindings persist under `mv.hotkey.*` keys (consistent with the existing `mv.*` namespace).
+- If `RegisterEventHotKey` returns `eventHotKeyExistsErr` (-9878), the slot is left unregistered and
+  surfaced in `conflictedActions` (shown in Settings → Hotkeys). Never crash.
+- Gain nudge clamps to `0.5...4.0` — the SAME range as the Settings → General "Output Gain" slider
+  (`SettingsView.gainCard`). Keep these in sync if the slider range ever changes.
+- `nonoisemac://` URL scheme is registered in `Resources/Info.plist` (`CFBundleURLTypes`).
+  **This only works in a bundled `.app`** — `swift run` / `swift build` do not register URL schemes.
+  Test via `./bundle.sh` + opening `NoNoiseMac.app`.
+
 ## Input Volume & Smart Level (hot-mic guard)
 - **Input Volume** is an app-level pre-DSP trim (`inputVolumeValue`, persisted `mv.inputVolume`, range 25%…100%, default 100%). Applied in `captureOutput(...)` after 48 kHz conversion and **before** `ringBuffer.write`. Does **not** write macOS hardware input volume.
 - **Runtime scalar:** capture/render paths read `realtimeInputVolume` (mirrored from `inputVolumeValue` in `didSet`), never the `@Published` wrapper directly.

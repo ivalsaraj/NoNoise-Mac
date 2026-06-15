@@ -2,6 +2,26 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Control layer (global hotkeys + A/B bypass + Stream Deck) added
+- Added the pure control models + `ControlReducer` to `Sources/Core/ControlLayer.swift`
+  (`ControlAction`, `HotkeyActionID`, `HotkeyBinding`, `HotkeyModifier`, `ControlState`,
+  `ControlMutation`) so the real dispatch logic is unit-tested headlessly without `AudioModel`.
+- The reducer returns `(ControlState, [ControlMutation])`; `ActionDispatcher` (Sources/App) applies
+  ONLY the emitted mutations onto a live `AudioModel` — never a blanket field write-back, which would
+  re-trip the knob `didSet`s (writing `outputGainValue` flips a preset to `.custom`; writing
+  `selectedPreset` re-applies the preset's own gain). So `.toggleAI` no longer demotes the active
+  preset to Custom and `.presetNext` keeps the preset-defined gain.
+- `HotkeyManager` (Sources/App) registers system-wide Carbon `RegisterEventHotKey` combos (default
+  ⌃⌥ set, deterministic `EventHotKeyID`s) with UserDefaults persistence under `mv.hotkey.*`; created
+  at app launch in `NoNoiseMacApp.init()` so hotkeys are live before the popover opens (and
+  `appDelegate.dispatcher` is wired in `init()` too, so the URL fallback works pre-popover).
+- `nonoisemac://` URL scheme registered in `Resources/Info.plist`.
+- A/B bypass uses a desired-vs-effective AI model: while bypassed, AI is forced off and toggle-AI
+  updates the DESIRED state (restored on bypass exit) — never persisted; the popover master toggle
+  routes through the dispatcher and is disabled during bypass so AI can't be re-enabled against an
+  active bypass.
+- Gain nudge clamps to the slider's `0.5...4.0`. `NoNoiseMacCLI` extended with `--action <verb>`.
+
 ### 2026-06-15 — GitHub report action added
 - Added a compact **Report** action to the menu-bar popover footer and a matching
   **Report a feature or issue** link in Settings. Both open the NoNoise Mac GitHub issue template

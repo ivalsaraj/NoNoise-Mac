@@ -49,6 +49,9 @@ Everything happens **on your device**. Your audio never leaves your Mac.
 - **🔒 100% private** — fully on-device on the Neural Engine; nothing is uploaded, ever.
 - **🎛️ One-click modes** — Meeting, Podcast, Tutorial, or Custom, with strength + tone control.
 - **🎙️ Broadcast Voice** — a one-tap clarity lift (Off / Low / Medium / High) that adds studio presence and tames sibilance, so you sound clearer and more present while still sounding like *you*.
+- **⌨️ Global Hotkeys + Stream Deck** — system-wide hotkeys (user-configurable) for every
+  control action (toggle AI, A/B bypass, cycle preset, cycle Broadcast Voice, nudge gain), plus
+  a `nonoisemac://` URL scheme for Stream Deck "Open" actions or shell scripting.
 - **🛠️ Works everywhere** — any input (Built-in, USB, XLR via interface) → any app via a virtual cable.
 - **🟢 On by default** — launches actively cancelling noise; toggle from the menu bar anytime.
 - **💸 Free & open source** — MIT licensed.
@@ -67,6 +70,42 @@ Your selection (and any fine-tuning) is remembered between launches.
 ### 🎙️ Broadcast Voice
 
 An optional clarity enhancement layered on top of any mode. It pairs a gentle, wide presence lift with an automatic de-esser, so added "air" never becomes harsh sibilance. **Off** by default; **Low / Medium / High** increase the effect. It is designed to be transparent — a peaking bell with unity gain at the low end and a de-esser that only acts on real "ess" sounds — so it preserves the identity of your voice.
+
+### ⌨️ Global Hotkeys + Stream Deck
+
+**Global hotkeys** (default combos use ⌃⌥ to avoid system-shortcut collisions):
+
+| Action | Default |
+|---|---|
+| Toggle Noise Cancellation | ⌃⌥N |
+| A/B Bypass (hold for raw) | ⌃⌥B |
+| A/B Bypass (toggle) | ⌃⌥⇧B |
+| Preset → Next | ⌃⌥] |
+| Preset → Previous | ⌃⌥[ |
+| Broadcast Voice → Next | ⌃⌥C |
+| Gain + | ⌃⌥= |
+| Gain − | ⌃⌥- |
+
+Rebind any hotkey in **Settings → Hotkeys**. If a combo is already in use by another app,
+NoNoise Mac shows a conflict warning and leaves that slot unregistered.
+
+**Stream Deck (no SDK required):** Use the Stream Deck "Open" action (or "Website" in Open
+mode) with one of these URLs:
+
+```
+nonoisemac://toggle
+nonoisemac://bypass
+nonoisemac://preset/next
+nonoisemac://preset/prev
+nonoisemac://clarity/next
+nonoisemac://gain/up
+nonoisemac://gain/down
+```
+
+Or from a terminal / shell script: `open nonoisemac://toggle` (or `NoNoiseMacCLI --action toggle`).
+
+**A/B Bypass:** Hold ⌃⌥B to momentarily hear the raw mic (useful for comparing before/after
+during a recording). Release to restore AI. ⌃⌥⇧B toggles bypass on/off persistently.
 
 ## 📥 Install
 
@@ -174,8 +213,8 @@ Microphone ─▶ Capture (48 kHz) ─▶ Ring buffer ─▶ STFT
 - **DeepFilterNet3** runs as a streaming UNet on CoreML (`computeUnits = .all`).
 - A faithful STFT feature pipeline (ERB bands, complex-spec features) matches the reference
   model exactly — see [`AGENTS.md`](AGENTS.md) and [`CONCEPTS.md`](CONCEPTS.md).
-- An optional **Voice Polish** chain (high-pass → shelves → compressor → limiter) adds tone
-  and leveling for Podcast/Tutorial modes.
+- An optional **Voice Polish** chain (high-pass → shelves → presence → de-esser → compressor →
+  limiter) adds tone, clarity, and leveling for Podcast/Tutorial modes and Broadcast Voice.
 
 ## 🔒 Privacy
 

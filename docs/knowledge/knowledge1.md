@@ -5,6 +5,82 @@ for the must-read failure modes.
 
 ---
 
+### [DECISION] 2026-06-15 — Carbon RegisterEventHotKey over NSEvent global monitors (@Valsaraj)
+- **Problem:** System-wide hotkeys for a backgrounded menu-bar app.
+- **Decision:** Use Carbon `RegisterEventHotKey` + `InstallEventHandler`. It works under the
+  hardened runtime with the existing two entitlements (no new entitlement, no Accessibility prompt).
+  `NSEvent.addGlobalMonitorForEvents` is the SwiftUI-friendly alternative but requires Accessibility
+  permission — violating the minimal-entitlement policy.
+- **Rule:** Never add Accessibility permission for hotkey capture in this app. If global key
+  monitoring is ever needed beyond registered combos, revisit and document the permission impact.
+- **Files:** `Sources/App/HotkeyManager.swift`, `Resources/NoNoiseMac.entitlements`
+
+### [PATTERN] 2026-06-15 — Pure reducer in Core makes the control layer testable (@Valsaraj)
+- **Problem:** The test target depends on `Core` only; `AudioModel.init()` starts CoreAudio so it
+  is not headless-testable. Putting control logic in `Sources/App` (consumed via `@testable import
+  Core`) would be untestable and would not even compile from tests.
+- **Decision:** Keep the PURE models + a `ControlReducer` over a value-type `ControlState` in
+  `Sources/Core/ControlLayer.swift`. `ActionDispatcher` (App) is a thin adapter (read state from
+  `AudioModel` → reduce → write back). Tests exercise the reducer directly — no test-only branches.
+- **Rule:** Any control/state logic that must be tested goes in `Core` as a pure function over a
+  value type; the App layer only adapts it onto live objects. Never put testable logic in `App`.
+- **Files:** `Sources/Core/ControlLayer.swift`, `Sources/App/ActionDispatcher.swift`,
+  `Tests/NoNoiseMacTests/ControlLayerTests.swift`
+
+### [GOTCHA] 2026-06-15 — A/B bypass needs desired-vs-effective AI state (@Valsaraj)
+- **Problem:** Naïvely saving `isAIEnabled` on bypass entry and restoring on exit breaks if the user
+  toggles AI WHILE bypassed: the toggle flips the forced-off live value, then bypass exit clobbers it
+  back to the pre-bypass value — the toggle is lost.
+- **Root Cause:** A single `isAIEnabled` field conflated "what the user wants" with "what's playing".
+- **Fix:** Separate `desiredAI` (what the user wants, flipped by `.toggleAI` always) from effective AI
+  (`desiredAI && !bypassed`, written to `AudioModel.isAIEnabled`). Bypass exit recomputes effective
+  from the CURRENT desired value. See `ControlReducer` + the bypass-sequence tests.
+- **Rule:** When a transient override (bypass) suppresses a user-settable flag, store the user's
+  desired value separately and recompute the effective value — don't save/restore the live value.
+- **Files:** `Sources/Core/ControlLayer.swift`, `Tests/NoNoiseMacTests/ControlLayerTests.swift`
+
+### [GOTCHA] 2026-06-15 — Carbon EventHotKeyID must be deterministic, not hashValue (@Valsaraj)
+- **Problem:** Building `EventHotKeyID.id` from `action.rawValue.hashValue` makes the fired hotkey
+  ID un-matchable: Swift's `String.hashValue` is randomized per process, so the value used at
+  registration differs from naive reconstruction and the event can't be routed back to its action.
+- **Fix:** Derive the numeric ID from the action's index in `HotkeyActionID.allCases` (+1, never 0).
+  Also: the Carbon C callback must not call a `@MainActor` method synchronously — extract the
+  `EventHotKeyID` in the callback, then hop via `Task { @MainActor in … }`.
+- **Rule:** Carbon `EventHotKeyID`s must be stable, deterministic small integers; bridge C callbacks
+  to the main actor explicitly instead of assuming the calling thread.
+- **Files:** `Sources/App/HotkeyManager.swift`
+
+### [GOTCHA] 2026-06-15 — Dispatcher must apply explicit mutations, never blanket-write AudioModel (@Valsaraj)
+- **Problem:** An `ActionDispatcher` that pushed the whole reduced state back onto `AudioModel` every
+  dispatch (`model.outputGainValue = state.gain`, `model.selectedPreset = state.preset`, …) corrupted
+  preset state. `AudioModel.outputGainValue.didSet` calls `onKnobChanged()`, which flips a non-`.custom`
+  preset to `.custom` — so even `.toggleAI` (which never touches gain) demoted Meeting/Podcast/Tutorial
+  to Custom. Worse, `.presetNext` wrote `selectedPreset` (whose `didSet` → `applyPreset` sets the
+  preset's gain/atten) and THEN wrote the pre-change `state.gain` back, overriding the preset gain and
+  re-flipping to Custom.
+- **Root Cause:** `AudioModel`'s `@Published` knobs are NOT inert setters — their `didSet`s mutate
+  preset state. Writing an unchanged field is not a no-op.
+- **Fix:** `ControlReducer.reduce` returns `(ControlState, [ControlMutation])`. Each mutation
+  (`.setAIEffective`/`.setPreset`/`.setClarity`/`.setGain`) names exactly one changed field; the adapter
+  applies ONLY those. `.toggleAI`/bypass → `.setAIEffective` only; `.presetNext/prev` → `.setPreset`
+  only (no trailing gain write — the preset owns its gain); `.gainUp/down` → `.setGain` (the
+  `onKnobChanged()` → `.custom` flip is the intended manual-edit behavior).
+- **Rule:** When adapting a pure reducer onto a stateful object whose setters have side effects, emit
+  an explicit list of changed fields and write only those — never blanket-write the full snapshot.
+- **Files:** `Sources/Core/ControlLayer.swift`, `Sources/App/ActionDispatcher.swift`,
+  `Tests/NoNoiseMacTests/ControlLayerTests.swift`
+
+### [GOTCHA] 2026-06-15 — Bypass-safe AI must gate the UI toggle, not just the dispatcher (@Valsaraj)
+- **Problem:** The desired-vs-effective AI rule is only canonical for dispatcher actions. The popover
+  master toggle bound directly to `$audioModel.isAIEnabled`, so during bypass a user could flip the UI
+  toggle and write `isAIEnabled = true` straight onto the model — re-enabling AI processing while
+  `isBypassed == true`, defeating the bypass.
+- **Fix:** Bind the toggle to `dispatcher.aiToggleBinding` (routes through `.toggleAI`) and
+  `.disabled(dispatcher.isBypassed)`. Desired AI is still changeable by hotkey while bypassed.
+- **Rule:** Any UI control that writes a field also owned by a transient-override state machine must go
+  through that machine (or be disabled while the override is active) — a direct binding is a back door.
+- **Files:** `Sources/App/ContentView.swift`, `Sources/App/ActionDispatcher.swift`
+
 ### [DECISION] 2026-06-15 — Input Volume is app-level pre-DSP trim, not hardware volume (@Valsaraj)
 - **Problem:** Hot mics clip or sound crushed/harsh after NoNoise processing; users expect a macOS-like "Input Volume" control.
 - **Decision:** Ship **Input Volume** as an app-level scalar applied after conversion and before the ring buffer (`mv.inputVolume`). Do not write macOS system/hardware input volume — keeps behavior reversible, per-app, and consistent across USB/BT/built-in mics. Pair with optional **Smart Level** that only *reduces* gain when peaks repeatedly hit ~0.98; never auto-boosts.
