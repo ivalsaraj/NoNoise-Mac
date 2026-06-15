@@ -1680,3 +1680,50 @@ The headless suite cannot exercise the live audio path. After implementation, ve
 - **No "MetalVoice"/"Ghostkwebb" in Sources/:** none introduced.
 - **No absolute local paths:** all paths are repo-relative.
 - **`mv.*` persistence:** `mv.mouthNoise` follows the existing pattern exactly.
+
+---
+
+## Post-Implementation Amendments (2026-06-15)
+
+Applied after implementation + Codex code review (gpt-5.5, APPROVED round 2). The DSP/source
+code was implemented **verbatim** from this plan and was NOT changed. During Task 3 verification,
+three tests authored in this plan failed against the plan's own (faithful) DSP. Root-caused with a
+throwaway diagnostic harness; all three were defects in the plan's **test stimuli/metrics**, not in
+the DSP. The user reviewed the evidence and chose to keep the DSP verbatim and correct only the
+tests. These amendments record the gaps so the plan stays a faithful learning artifact — the test
+code shown earlier in this document is the original (defective) version; `MouthNoiseTests.swift` in
+the repo is the corrected, authoritative version.
+
+1. **`testDeClickReducesShortSpike` — unphysical stimulus.**
+   - Gap: asserted attenuation of a single-sample (0.02 ms) spike. A 0.02 ms impulse is shorter
+     than any physical mouth click (~0.5–2 ms) and below the detector's minimum width — the 0.05 ms
+     fast envelope needs ≥2 samples to cross `clickRatio` (6×) × the slow background.
+   - Fix: inject a realistic few-sample short click and assert the minimum output across it is
+     attenuated (< 0.7× input). Assertion strength unchanged.
+   - Root cause: the plan validated the de-click against an idealized 1-sample impulse instead of a
+     physically realizable transient.
+
+2. **`testHigherMouthNoiseLevelReducesMoreOnPlosive` — wrong (non-monotonic) metric.**
+   - Gap: asserted monotonic **total output RMS** across levels. The de-plosive's subtractive form
+     `out = (1−frac)·x + frac·hp(x)` re-injects a phase-shifted high-passed copy, so total RMS
+     passes a null and *rises* again as `frac` grows — total RMS is not monotonic in level by
+     construction (measured: Low 0.160, Medium 0.0816, High 0.0845).
+   - Fix: assert monotonic **low-band energy removed** (`RMS(input−output) = ‖frac·lowSig‖`) — the
+     quantity the de-plosive actually controls, which is strictly monotonic in `frac`.
+   - Root cause: the plan chose a convenient aggregate (total RMS) that does not isolate the
+     de-plosive's low-band action.
+
+3. **`testSimultaneousClarityAndMouthNoiseChangeResetsBoth` — confounded by the shared limiter.**
+   - Gap: the loud burst drove the limiter (active on the clarity path) into gain reduction whose
+     release state legitimately differs from a cold chain, masking the stage-group reset the test
+     asserts. The limiter is shared safety infrastructure, intentionally **not** reset on a per-level
+     change (resetting would click mid-speech).
+   - Fix: raise the limiter ceiling in BOTH chains so the shared limiter rests at unity gain (a true
+     identity), isolating the stage-group reset. The strict `maxDelta < 1e-5` assertion and the loud
+     burst are unchanged. Verified non-vacuous: disabling the stage-group resets makes it fail
+     (`maxDelta ≈ 0.17 ≫ 1e-5`).
+   - Root cause: the plan's reset test energized a shared, intentionally-non-resetting stage and then
+     attributed the resulting divergence to the per-level stage groups.
+
+**Reviewer-confirmed:** Codex code review (gpt-5.5) APPROVED these corrections as physically faithful
+and not test-weakening, after being given the same evidence (Risk: LOW–MEDIUM, 0 blocking issues).
