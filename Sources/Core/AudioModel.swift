@@ -250,21 +250,21 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     private var currentLoudnessGain: Float = 1
 
     private enum PrefKey {
-        static let preset = "mv.preset"
-        static let strength = "mv.suppressionStrength"
-        static let atten = "mv.attenuationLimitDb"
-        static let gain = "mv.outputGain"
-        static let voicePolish = "mv.voicePolish"
-        static let clarity = "mv.clarity"
-        static let mouthNoise = "mv.mouthNoise"
-        static let inputVolume = "mv.inputVolume"
-        static let smartLevel = "mv.smartLevel"
-        static let incomingEnabled = "mv.incomingEnabled"
-        static let incomingSourceUID = "mv.incomingSourceUID"
-        static let incomingOutputUID = "mv.incomingOutputUID"
-        static let profiles = "mv.profiles"   // Voice Profiles (JSON array)
-        static let loudnessNorm = "mv.loudnessNorm"
-        static let loudnessTarget = "mv.loudnessTarget"
+        static let preset = SettingsResetPolicy.presetKey
+        static let strength = SettingsResetPolicy.strengthKey
+        static let atten = SettingsResetPolicy.attenuationKey
+        static let gain = SettingsResetPolicy.gainKey
+        static let voicePolish = SettingsResetPolicy.voicePolishKey
+        static let clarity = SettingsResetPolicy.clarityKey
+        static let mouthNoise = SettingsResetPolicy.mouthNoiseKey
+        static let inputVolume = SettingsResetPolicy.inputVolumeKey
+        static let smartLevel = SettingsResetPolicy.smartLevelKey
+        static let incomingEnabled = SettingsResetPolicy.incomingEnabledKey
+        static let incomingSourceUID = SettingsResetPolicy.incomingSourceUIDKey
+        static let incomingOutputUID = SettingsResetPolicy.incomingOutputUIDKey
+        static let profiles = SettingsResetPolicy.profilesKey   // Voice Profiles (JSON array)
+        static let loudnessNorm = SettingsResetPolicy.loudnessNormKey
+        static let loudnessTarget = SettingsResetPolicy.loudnessTargetKey
     }
 
     public struct DeviceStruct: Identifiable {
@@ -535,6 +535,40 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         d.set(smartLevelEnabled, forKey: PrefKey.smartLevel)
         d.set(loudnessNormEnabled, forKey: PrefKey.loudnessNorm)
         d.set(loudnessTargetLUFS, forKey: PrefKey.loudnessTarget)
+    }
+
+    public func resetSettingsToDefaults() {
+        SettingsResetPolicy.reset()
+
+        isApplyingPreset = true
+        isAIEnabled = true
+        selectedPreset = .meeting
+        suppressionStrength = 1.0
+        attenuationLimitDb = VoicePreset.maxAttenuationDb
+        outputGainValue = 1.0
+        voicePolishEnabled = true
+        clarityLevel = .off
+        mouthNoiseLevel = .off
+        inputVolumeValue = 1.0
+        smartLevelEnabled = false
+        incomingCleanupEnabled = false
+        incomingSourceUID = ""
+        incomingOutputDeviceID = 0
+        loudnessNormEnabled = false
+        loudnessTargetLUFS = -14
+        isApplyingPreset = false
+
+        smartLevelMessage = nil
+        currentLoudnessGain = 1
+        voiceChain.setLoudnessGain(1.0)
+        dspEngine.suppressionStrength = suppressionStrength
+        dspEngine.attenuationLimitDb = attenuationLimitDb
+        dspEngine.outputGain = outputGainValue
+
+        applyVoiceChain()
+        applyIncomingCleanup()
+        persistSettings()
+        persistIncomingSettings()
     }
 
     private func loadSettings() {

@@ -5,6 +5,12 @@ for the must-read failure modes.
 
 ---
 
+### [DECISION] 2026-06-15 — Settings reset preserves user-created assets (@Valsaraj)
+- **Problem:** A "Reset Settings" action can be interpreted as either "restore audio knobs/devices" or "delete everything under `mv.*`"; the latter would unexpectedly wipe saved Voice Profiles and custom Hotkeys.
+- **Decision:** Reset only app/audio/device settings through `SettingsResetPolicy.resettableKeys`. Preserve `mv.profiles` and every `mv.hotkey.*` binding. `AudioModel.resetSettingsToDefaults()` applies live defaults under `isApplyingPreset`, reconfigures the voice chain once, tears down incoming cleanup, and persists the default state back to UserDefaults.
+- **Rule:** Future app/audio settings keys that should reset belong in `SettingsResetPolicy.resettableKeys`; user-created assets such as profiles and hotkeys must stay out of that list unless product scope explicitly changes.
+- **Files:** `Sources/Core/SettingsResetPolicy.swift`, `Sources/Core/AudioModel.swift`, `Sources/App/SettingsView.swift`, `Tests/NoNoiseMacTests/SettingsResetPolicyTests.swift`.
+
 ### [BUG] 2026-06-15 — Integrated LUFS desynced after the block ring wrapped (@Valsaraj)
 - **Problem:** Integrated (gated) LUFS read a stale value after ~1 h of continuous audio — a long-gone loud passage could keep the headline number ~20 LU too high (e.g. −20 LUFS reported for what was actually a −43 LUFS quiet program).
 - **Root cause:** `LoudnessMeter.integratedLUFS` computed the relative-gate threshold from **lifetime** running sums (`absGatedMSSum / absGatedCount`, incremented on every gated block and never decremented) but then summed only the last `maxBlocks` entries actually present in the fixed ring. Once the ring wrapped (9000 blocks × 400 ms = 1 h), the threshold reflected all-time history while the gated set was only the last hour — two different windows.

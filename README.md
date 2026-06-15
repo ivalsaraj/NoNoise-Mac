@@ -48,6 +48,7 @@ Everything happens **on your device**. Your audio never leaves your Mac.
 - **⚡ Real-time feel** — a tight Metal/Accelerate pipeline keeps latency negligible for live calls.
 - **🔒 100% private** — fully on-device on the Neural Engine; nothing is uploaded, ever.
 - **🎛️ One-click modes** — Meeting, Podcast, Tutorial, or Custom, with strength + tone control.
+- **↩️ Safe reset** — restore audio/device settings to defaults from Settings without deleting saved Voice Profiles or custom Hotkeys.
 - **🎙️ Broadcast Voice** — a one-tap clarity lift (Off / Low / Medium / High) that adds studio presence and tames sibilance, so you sound clearer and more present while still sounding like *you*.
 - **🎧 Clean Incoming / Guest** — de-noise the *other* side too. Route a noisy guest or caller through a loopback device and NoNoise Mac cleans **what you hear** in real time with the same on-device AI — no cloud, no subscription.
 - **🫦 Mouth Noise** — an optional de-plosive (P-pop / B-thump suppressor) and de-click (lip-smack / mouth-click suppressor) stage (Off / Low / Medium / High). Both are identity at rest — only the artifact is removed, never the voice.

@@ -2,6 +2,16 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Settings reset added
+- Added a destructive-confirmed **Reset Settings** card in Settings → General. It restores
+  audio/device settings to defaults (Meeting preset, full suppression, unity input/output gain,
+  Voice Polish on, Broadcast Voice/Mouth Noise/Smart Level/Loudness/Incoming cleanup off, LUFS
+  target −14) while preserving saved Voice Profiles and custom Hotkeys.
+- Added `SettingsResetPolicy` as the single resettable-key list, with a headless XCTest proving
+  reset removes app/audio keys but preserves `mv.profiles` and `mv.hotkey.*`.
+- `Sources/App/SettingsView.swift`, `Sources/Core/AudioModel.swift`,
+  `Sources/Core/SettingsResetPolicy.swift`, `Tests/NoNoiseMacTests/SettingsResetPolicyTests.swift`.
+
 ### 2026-06-15 — Fix: loudness peak-safe copy now states the real limiter ceiling
 - Code review (Codex, MINOR) flagged that the Settings loudness caption and `CONCEPTS.md`
   claimed normalization is capped "~3 dB below clipping", but the actual `VoiceChain`

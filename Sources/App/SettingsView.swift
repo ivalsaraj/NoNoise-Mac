@@ -37,6 +37,7 @@ struct GeneralSettingsView: View {
     @State private var newProfileName: String = ""
     @State private var renameTargetID: UUID? = nil
     @State private var renameText: String = ""
+    @State private var isShowingResetConfirmation = false
 
     var body: some View {
         ScrollView {
@@ -48,9 +49,18 @@ struct GeneralSettingsView: View {
                 gainCard
                 incomingCard
                 loudnessCard
+                resetCard
                 footer
             }
             .padding(.trailing, 2)
+        }
+        .alert("Reset settings?", isPresented: $isShowingResetConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Reset", role: .destructive) {
+                withAnimation { audioModel.resetSettingsToDefaults() }
+            }
+        } message: {
+            Text("This restores NoNoise Mac audio and device settings to defaults. Saved Voice Profiles and custom Hotkeys are kept.")
         }
     }
 
@@ -460,6 +470,25 @@ struct GeneralSettingsView: View {
             .disabled(!audioModel.loudnessNormEnabled)
             Text("Peak-safe: a limiter caps the output just below clipping (≈ −1 dBFS). Loudness is K-weighted (ITU-R BS.1770); peak is sample-peak, not certified true-peak.")
                 .font(.caption2).foregroundColor(.secondary)
+        }
+        .nnCard()
+    }
+
+    private var resetCard: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                sectionHeader("Reset Settings", systemImage: "arrow.counterclockwise")
+                Text("Restore audio and device settings to defaults. Voice Profiles and Hotkeys are kept.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            Button(role: .destructive) {
+                isShowingResetConfirmation = true
+            } label: {
+                Label("Reset", systemImage: "arrow.counterclockwise")
+            }
+            .controlSize(.small)
         }
         .nnCard()
     }
