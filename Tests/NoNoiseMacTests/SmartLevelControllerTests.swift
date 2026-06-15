@@ -104,6 +104,38 @@ final class SmartLevelControllerTests: XCTestCase {
         XCTAssertNil(next)
     }
 
+    func testSmartLevelCanReduceInputVolumeBelowThirtyFivePercent() {
+        var ticks = 0
+        for _ in 0..<SmartLevelController.hotTickThreshold { ticks += 1 }
+
+        let next = SmartLevelController.nextInputVolume(current: 0.35, hotTicks: ticks, enabled: true)
+
+        XCTAssertNotNil(next)
+        XCTAssertLessThan(next!, 0.35)
+        XCTAssertGreaterThanOrEqual(next!, SmartLevelController.minInputVolume)
+    }
+
+    func testSmartLevelStopsAtManualInputFloor() {
+        var ticks = 0
+        for _ in 0..<SmartLevelController.hotTickThreshold { ticks += 1 }
+
+        let next = SmartLevelController.nextInputVolume(
+            current: SmartLevelController.minInputVolume, hotTicks: ticks, enabled: true)
+
+        XCTAssertNil(next)
+    }
+
+    func testSmartLevelFromFortyThreePercentCanKeepReducing() {
+        var ticks = 0
+        for _ in 0..<SmartLevelController.hotTickThreshold { ticks += 1 }
+
+        let next = SmartLevelController.nextInputVolume(current: 0.43, hotTicks: ticks, enabled: true)
+
+        XCTAssertNotNil(next)
+        XCTAssertLessThan(next!, 0.43)
+        XCTAssertGreaterThanOrEqual(next!, SmartLevelController.minInputVolume)
+    }
+
     func testRuntimeScalarMirrorsInputVolumeValue() {
         let ui: Float = 0.73
         XCTAssertEqual(SmartLevelController.runtimeInputVolume(for: ui), 0.73, accuracy: 1e-6)
