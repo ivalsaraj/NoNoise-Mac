@@ -2,6 +2,24 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Hot-mic ceiling fix (trimmed input meter, no Tutorial boost, full Smart Level floor)
+- **Input meter now reflects the trimmed signal.** `AudioModel.captureOutput` measured RMS on the
+  pre-trim source, so lowering Input Volume (e.g. to 43%) left the meter pinned at max. Added
+  `SmartLevelController.applyInputVolumeAndMeasure` (one allocation-free pass: raw peak/clip →
+  in-place trim → trimmed peak/RMS/hot) and `evaluateInputGuard` (pure mirror of the input-side
+  meter + Smart Level contract). `publishMeterTelemetry` now derives `inputLevel`,
+  `isInputNearCeiling`, `isSourceMicClipping`, and `consecutiveTrimmedHotTicks` from it; raw peak
+  still drives the source-clip warning.
+- **Tutorial preset no longer hides a boost.** `outputGain` 1.2 → 1.0 and `compMakeupDb` 4 → 0; the
+  rest of the chain (high-pass, shelves, threshold, ratio, attack/release, limiter ceiling) is
+  unchanged so Tutorial stays present/clear without double loudness + limiter crush.
+- **Smart Level auto floor 35% → 25%.** `minAutoInputVolume = minInputVolume`, so protective
+  auto-trim can reach the same floor as the manual Input Volume control. Still never auto-boosts.
+- macOS hardware input volume is intentionally NOT written (non-goal). Docs: README modes table +
+  `AGENTS.md` Input Volume & Smart Level section updated. 89 pure tests green; debug + `-c release
+  --arch arm64` builds green.
+- Plan: `docs/plans/2026-06-15-hot-mic-ceiling-fix.md`.
+
 ### 2026-06-15 — GitHub report action added
 - Added a compact **Report** action to the menu-bar popover footer and a matching
   **Report a feature or issue** link in Settings. Both open the NoNoise Mac GitHub issue template
