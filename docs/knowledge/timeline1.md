@@ -2,6 +2,13 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Fix: loudness peak-safe copy now states the real limiter ceiling
+- Code review (Codex, MINOR) flagged that the Settings loudness caption and `CONCEPTS.md`
+  claimed normalization is capped "~3 dB below clipping", but the actual `VoiceChain`
+  limiter ceiling is −1 dBFS (−0.5 in Tutorial). Corrected the user-facing copy to "just
+  below clipping (≈ −1 dBFS)" so the peak-safety claim is accurate.
+- `Sources/App/SettingsView.swift`, `CONCEPTS.md`.
+
 ### 2026-06-15 — Fix: integrated-LUFS rolling window desynced after the block ring wrapped
 - Code review (Codex) caught that `LoudnessMeter.integratedLUFS` divided **lifetime** sums
   (`absGatedCount` / `absGatedMSSum`, incremented forever) to set the relative-gate

@@ -70,6 +70,6 @@ docs, and reviews.
   with polish/clarity off (the chain activates for `loudnessActive` so the limiter runs).
 - **Peak / clip** — v1 tracks **sample-peak** + an output-clip warning (reuses the
   Smart Level output-clip signal), NOT oversampled true-peak; the normalization ceiling
-  is a peak-safe limiter (~−3 dB), not certified dBTP.
+  is the voice-chain limiter (≈ −1 dBFS; −0.5 in Tutorial), not certified dBTP.
 - **Output telemetry runs whenever audio flows** (like Smart Level's), so the output
   meter/LUFS are live in passthrough too; AI activity is the only AI-gated readout.

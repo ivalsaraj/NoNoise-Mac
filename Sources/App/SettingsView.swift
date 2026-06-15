@@ -251,7 +251,7 @@ struct GeneralSettingsView: View {
             }
             .pickerStyle(.menu)
             .disabled(!audioModel.loudnessNormEnabled)
-            Text("Peak-safe: output is capped ~3 dB below clipping. Loudness is K-weighted (ITU-R BS.1770); peak is sample-peak, not certified true-peak.")
+            Text("Peak-safe: a limiter caps the output just below clipping (≈ −1 dBFS). Loudness is K-weighted (ITU-R BS.1770); peak is sample-peak, not certified true-peak.")
                 .font(.caption2).foregroundColor(.secondary)
         }
         .nnCard()
