@@ -5,6 +5,12 @@ for the must-read failure modes.
 
 ---
 
+### [GOTCHA] 2026-06-15 — Input meter must publish the TRIMMED signal, not the pre-trim source RMS (@Valsaraj)
+- **Symptom:** With Input Volume at 43% the input meter still read near max, so the trim looked broken — worst in Tutorial mode, which also double-boosted (`outputGain 1.2` + `compMakeupDb 4`) and leaned on the limiter, sounding crushed.
+- **Root cause:** RMS was computed in the *pre-trim* loop and published into `inputLevel`; the trim (`vDSP_vsmul`) ran afterward, so the meter never reflected what NoNoise actually processes.
+- **Fix/Rule:** Measure raw + trimmed in one allocation-free helper (`SmartLevelController.applyInputVolumeAndMeasure` — raw scan → in-place trim → trimmed scan) and publish `trimmedRMS` as the meter; keep raw peak/clip for the separate source-clip warning. A meter must reflect the signal at the stage it claims to represent. The raw-vs-trimmed contract is a pure helper (`evaluateInputGuard`) so it is unit-tested without constructing `AudioModel`.
+- **Files:** `Sources/Core/AudioModel.swift`, `Sources/Core/AudioProcessing/SmartLevelController.swift`.
+
 ### [DECISION] 2026-06-15 — Incoming engine lifecycle is truthful: retain ONLY a genuinely-running pipeline (@Valsaraj)
 - **Problem:** A `start()` that returned `Void` (or always "succeeded") let `AudioModel` retain the engine even when capture attach failed, when the monitor couldn't be pinned, or when `AVAudioEngine.start()` threw (the error was swallowed). Result: the SECOND `DeepFilterNetDSP` (CoreML) pipeline stayed resident — burning ANE/CPU/memory — while producing NO audible output (a false-positive "started"), breaking the zero-cost-when-off mandate. Separately, a hardware change (unplugging the loopback/monitor) left a stale engine running against a vanished device because the refresh path never re-validated it.
 - **Decision:** `IncomingCleanupEngine.start()` returns `Bool` and is truthful — `true` ONLY after capture attaches AND the monitor pins (`AudioUnitSetProperty(...CurrentDevice) == noErr`) AND `engine.start()` succeeds; capture is kicked off only AFTER playback is confirmed live; any failure calls `stop()` and returns `false`. `applyIncomingCleanup()` assigns `incomingEngine = engine` ONLY on a `true` start (else `stop()` + `nil`). `refreshDevicesAfterHardwareChange()` re-runs `applyIncomingCleanup()` (HAL-direct validation, independent of the async-published picker arrays) to tear down vanished selections or restart recovered ones. `stop()`'s guard also covers the attached-but-idle state (`!captureSession.inputs.isEmpty`) so the playback-failure path tears down deterministically instead of relying on dealloc.
@@ -122,13 +128,6 @@ for the must-read failure modes.
 - **Rule:** Any UI control that writes a field also owned by a transient-override state machine must go
   through that machine (or be disabled while the override is active) — a direct binding is a back door.
 - **Files:** `Sources/App/ContentView.swift`, `Sources/App/ActionDispatcher.swift`
-
-### [GOTCHA] 2026-06-15 — Input meter showed the raw source level, not the trimmed signal (@Valsaraj)
-- **Problem:** With Input Volume at 43% the input meter still read max, so the trim looked broken — especially in Tutorial mode, which also double-boosted (`outputGain 1.2` + `compMakeupDb 4`) and leaned on the limiter, sounding crushed.
-- **Root cause:** `AudioModel.captureOutput` computed `rms` in the pre-trim loop and published that raw value into `inputLevel`; the trim (`vDSP_vsmul`) was applied afterward, so the meter never reflected what NoNoise processes.
-- **Fix:** Measure raw + trimmed in one allocation-free helper (`SmartLevelController.applyInputVolumeAndMeasure` — raw scan → in-place trim → trimmed scan) and publish `trimmedRMS` as the meter; keep raw peak/clip for the separate source-clip warning. The input-side meter + Smart Level contract is a pure helper (`evaluateInputGuard`) so the raw-vs-trimmed split is unit-tested without constructing `AudioModel`.
-- **Rule:** A meter must reflect the signal at the stage it claims to represent — publish post-trim values for the input meter; reserve raw-source telemetry for source-clipping warnings only.
-- **Files:** `Sources/Core/AudioModel.swift`, `Sources/Core/AudioProcessing/SmartLevelController.swift`.
 
 ### [DECISION] 2026-06-15 — Input Volume is app-level pre-DSP trim, not hardware volume (@Valsaraj)
 - **Problem:** Hot mics clip or sound crushed/harsh after NoNoise processing; users expect a macOS-like "Input Volume" control.

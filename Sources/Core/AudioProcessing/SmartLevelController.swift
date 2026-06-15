@@ -7,6 +7,7 @@ public enum SmartLevelController {
     public static let nearCeilingThreshold: Float = 0.98
     public static let clipThreshold: Float = 0.999
     public static let minInputVolume: Float = 0.25
+    /// Protective auto-trim may reach the same floor as the manual control (no auto-boost).
     public static let minAutoInputVolume: Float = minInputVolume
     public static let minOutputGain: Float = 0.25
     public static let defaultInputVolume: Float = 1.0
@@ -32,6 +33,10 @@ public enum SmartLevelController {
         }
     }
 
+    /// Telemetry captured around the in-place Input Volume trim.
+    /// `rawPeak`/`rawClipSamples` describe the physical/source signal (drives the
+    /// source-clipping warning); `trimmedPeak`/`trimmedRMS`/`trimmedHotSamples`
+    /// describe the signal NoNoise actually processes (drives the input meter + guard).
     public struct InputTelemetry: Equatable {
         public let rawPeak: Float
         public let trimmedPeak: Float
@@ -40,6 +45,10 @@ public enum SmartLevelController {
         public let trimmedHotSamples: Int
     }
 
+    /// Input-side guard contract published by `AudioModel.publishMeterTelemetry()`.
+    /// `inputLevel` is the trimmed meter value; the source warning and the trimmed
+    /// near-ceiling decision are kept separate so raw source clipping alone never
+    /// forces Smart Level to lower a trimmed signal that is already safe.
     public struct InputGuardDecision: Equatable {
         public let inputLevel: Float
         public let isSourceMicClipping: Bool
@@ -48,6 +57,9 @@ public enum SmartLevelController {
         public let suggestedInputVolume: Float?
     }
 
+    /// Measure raw source levels, apply Input Volume in place, then measure the trimmed
+    /// signal. Allocation-free: scalar loops + an optional in-place vDSP multiply only.
+    /// This is the production telemetry seam shared by `AudioModel.captureOutput(...)`.
     public static func applyInputVolumeAndMeasure(_ samples: UnsafeMutablePointer<Float>,
                                                   count: Int, volume: Float) -> InputTelemetry {
         guard count > 0 else {
@@ -85,6 +97,9 @@ public enum SmartLevelController {
                               trimmedHotSamples: trimmedHotSamples)
     }
 
+    /// Pure mirror of AudioModel's input-side meter + Smart Level decision. Lets the raw
+    /// vs trimmed contract be unit-tested without constructing `AudioModel`. UI pacing
+    /// (date/rate-limit) stays in `AudioModel.updateSmartLevel()`.
     public static func evaluateInputGuard(telemetry: InputTelemetry,
                                           currentHotTicks: Int,
                                           currentInputVolume: Float,
