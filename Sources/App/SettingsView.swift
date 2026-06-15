@@ -31,6 +31,7 @@ struct GeneralSettingsView: View {
             VStack(alignment: .leading, spacing: 16) {
                 brandedHeader
                 suppressionCard
+                inputVolumeCard
                 gainCard
                 footer
             }
@@ -122,6 +123,68 @@ struct GeneralSettingsView: View {
         .nnCard()
     }
 
+    // MARK: Input volume & Smart Level
+
+    private var inputVolumeCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                sectionHeader("Input Volume", systemImage: "mic.fill")
+                Spacer()
+                Text("\(Int(audioModel.inputVolumeValue * 100))%")
+                    .font(.callout)
+                    .monospacedDigit()
+                    .foregroundColor(.secondary)
+            }
+
+            HStack(spacing: 10) {
+                Image(systemName: "mic.fill").foregroundColor(.secondary).font(.caption)
+                Slider(value: $audioModel.inputVolumeValue, in: 0.25...1.0).tint(.accentColor)
+                Image(systemName: "mic.fill").foregroundColor(.secondary).font(.caption)
+            }
+
+            Text("Lowers your mic before NoNoise processing. Use this if your voice sounds clipped, crushed, or too loud even when speaking normally.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            HStack {
+                Spacer()
+                Button("Reset to 100%") {
+                    withAnimation { audioModel.inputVolumeValue = 1.0 }
+                }
+                .controlSize(.small)
+            }
+
+            if audioModel.isSourceMicClipping {
+                Label("Source mic is clipping before NoNoise. Lower macOS/device input volume if available.",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+            }
+            if audioModel.isInputNearCeiling {
+                Label("Input too loud", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+            }
+
+            Divider()
+
+            Toggle(isOn: $audioModel.smartLevelEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Smart Level").font(.subheadline)
+                    Text("Automatically lowers Input Volume or Output Gain when your voice repeatedly hits the ceiling.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+
+            if let msg = audioModel.smartLevelMessage {
+                Text(msg).font(.caption).foregroundColor(.secondary)
+            }
+        }
+        .nnCard()
+    }
+
     // MARK: Output gain
 
     private var gainCard: some View {
@@ -144,6 +207,12 @@ struct GeneralSettingsView: View {
             Text("Boost the volume if the noise suppression makes your voice too quiet.")
                 .font(.caption)
                 .foregroundColor(.secondary)
+
+            if audioModel.isOutputClipping {
+                Label("Output clipping", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundColor(.orange)
+            }
 
             HStack {
                 Spacer()

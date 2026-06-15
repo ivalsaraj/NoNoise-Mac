@@ -87,6 +87,30 @@ struct ContentView: View {
                 MeterView(level: audioModel.inputLevel)
                     .frame(height: 6)
             }
+
+            if audioModel.isInputNearCeiling || audioModel.isSourceMicClipping || audioModel.isOutputClipping {
+                VStack(alignment: .leading, spacing: 4) {
+                    if audioModel.isSourceMicClipping {
+                        Label("Source mic clipping — lower device input volume if available.",
+                              systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
+                    if audioModel.isInputNearCeiling {
+                        Label("Input too loud", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
+                    if audioModel.isOutputClipping {
+                        Label("Output clipping", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2)
+                            .foregroundColor(.orange)
+                    }
+                    if let msg = audioModel.smartLevelMessage {
+                        Text(msg).font(.caption2).foregroundColor(.secondary)
+                    }
+                }
+            }
         }
         .nnCard(highlighted: on)
     }
