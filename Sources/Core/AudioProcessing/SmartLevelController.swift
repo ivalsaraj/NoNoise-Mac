@@ -1,0 +1,93 @@
+import Foundation
+import Accelerate
+
+/// Pure helpers for Input Volume trimming and Smart Level protective adjustments.
+/// All logic here is allocation-free friendly and unit-testable without CoreAudio.
+public enum SmartLevelController {
+    public static let nearCeilingThreshold: Float = 0.98
+    public static let clipThreshold: Float = 0.999
+    public static let minInputVolume: Float = 0.25
+    public static let minAutoInputVolume: Float = 0.35
+    public static let minOutputGain: Float = 0.25
+    public static let defaultInputVolume: Float = 1.0
+    /// Consecutive hot meter ticks before Smart Level acts (~120 ms at 25 Hz).
+    public static let hotTickThreshold: Int = 3
+
+    public static func clampInputVolume(_ volume: Float) -> Float {
+        min(max(volume, minInputVolume), 1.0)
+    }
+
+    public static func dbToLinear(_ db: Float) -> Float {
+        powf(10, db / 20)
+    }
+
+    /// Apply pre-DSP input trim in place. No-op at unity.
+    public static func applyInputVolume(_ samples: inout [Float], volume: Float) {
+        let v = clampInputVolume(volume)
+        guard v != 1 else { return }
+        var scalar = v
+        samples.withUnsafeMutableBufferPointer { buf in
+            guard let base = buf.baseAddress else { return }
+            vDSP_vsmul(base, 1, &scalar, base, 1, vDSP_Length(buf.count))
+        }
+    }
+
+    public static func measurePeak(_ samples: [Float]) -> Float {
+        guard !samples.isEmpty else { return 0 }
+        var peak: Float = 0
+        for s in samples { peak = max(peak, abs(s)) }
+        return peak
+    }
+
+    /// Latch the highest peak seen in the current meter window.
+    public static func latchPeak(existing: Float, bufferPeak: Float) -> Float {
+        max(existing, bufferPeak)
+    }
+
+    public static func isNearCeiling(_ peak: Float) -> Bool {
+        peak >= nearCeilingThreshold
+    }
+
+    public static func isClipping(_ peak: Float) -> Bool {
+        peak >= clipThreshold
+    }
+
+    /// Count samples at/above clip threshold in a buffer.
+    public static func clipSampleCount(_ samples: [Float]) -> Int {
+        samples.reduce(0) { $0 + (abs($1) >= clipThreshold ? 1 : 0) }
+    }
+
+    /// Advance a consecutive-hot counter; reset when the window was not hot.
+    public static func advanceHotTicks(current: Int, wasHot: Bool) -> Int {
+        wasHot ? current + 1 : 0
+    }
+
+    /// Reduce Input Volume by ~1 dB when repeatedly hot. Never boosts.
+    public static func nextInputVolume(current: Float, hotTicks: Int, enabled: Bool) -> Float? {
+        guard enabled, hotTicks >= hotTickThreshold else { return nil }
+        let reduced = current * dbToLinear(-1)
+        let clamped = max(reduced, minAutoInputVolume)
+        guard clamped < current - 1e-6 else { return nil }
+        return clamped
+    }
+
+    /// Reduce Output Gain when output clips but trimmed input is not repeatedly hot.
+    public static func nextOutputGain(current: Float, outputClipTicks: Int, inputHotTicks: Int,
+                                      enabled: Bool) -> Float? {
+        guard enabled, inputHotTicks < hotTickThreshold, outputClipTicks >= hotTickThreshold else { return nil }
+        let reduced = current * dbToLinear(-1)
+        let clamped = max(reduced, minOutputGain)
+        guard clamped < current - 1e-6 else { return nil }
+        return clamped
+    }
+
+    /// Mirror UI value into the runtime scalar the capture path reads.
+    public static func runtimeInputVolume(for uiValue: Float) -> Float {
+        clampInputVolume(uiValue)
+    }
+
+    /// Raw-side source clipping: ADC/mic already distorted before NoNoise trim can help.
+    public static func isSourceMicClipping(rawPeak: Float, rawClipSampleCount: Int) -> Bool {
+        isClipping(rawPeak) || rawClipSampleCount > 0
+    }
+}

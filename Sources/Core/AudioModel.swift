@@ -120,7 +120,47 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         }
     }
 
+    /// App-level pre-DSP input trim (25%…100%). Does not write macOS hardware volume.
+    private var realtimeInputVolume: Float = 1.0
+
+    @Published public var inputVolumeValue: Float = 1.0 {
+        didSet {
+            realtimeInputVolume = SmartLevelController.runtimeInputVolume(for: inputVolumeValue)
+            guard !isApplyingPreset else { return }
+            persistSettings()
+        }
+    }
+
+    @Published public var smartLevelEnabled: Bool = false {
+        didSet {
+            guard !isApplyingPreset else { return }
+            if !smartLevelEnabled { smartLevelMessage = nil }
+            persistSettings()
+        }
+    }
+
+    @Published public var rawInputPeak: Float = 0.0
+    @Published public var trimmedInputPeak: Float = 0.0
+    @Published public var outputPeak: Float = 0.0
+    @Published public var isInputNearCeiling: Bool = false
+    @Published public var isOutputClipping: Bool = false
+    @Published public var isSourceMicClipping: Bool = false
+    @Published public var smartLevelMessage: String?
+
     private var isApplyingPreset = false
+
+    // Telemetry scalars written by capture/render; published by the meter timer (~25 Hz).
+    private var tInputLevel: Float = 0
+    private var tRawInputPeak: Float = 0
+    private var tTrimmedInputPeak: Float = 0
+    private var tOutputPeak: Float = 0
+    private var tOutputClipCount: Int32 = 0
+    private var tRawInputClipCount: Int32 = 0
+    private var tTrimmedInputHotCount: Int32 = 0
+    private var meterTimer: Timer?
+    private var consecutiveTrimmedHotTicks = 0
+    private var consecutiveOutputClipTicks = 0
+    private var lastSmartLevelAdjustTime: Date?
 
     private enum PrefKey {
         static let preset = "mv.preset"
@@ -129,6 +169,8 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         static let gain = "mv.outputGain"
         static let voicePolish = "mv.voicePolish"
         static let clarity = "mv.clarity"
+        static let inputVolume = "mv.inputVolume"
+        static let smartLevel = "mv.smartLevel"
     }
 
     public struct DeviceStruct: Identifiable {
@@ -200,7 +242,8 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
                 dsp.process(input: data, count: count, output: data)
                 chain.process(data, count: count)
             }
-            
+
+            self?.recordOutputTelemetry(data, count: count)
             return noErr
         }
         
@@ -215,9 +258,11 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         resolveVirtualMicLifecycle()   // arm the in-use listener + sync initial state
         installHardwareDeviceListener()
         loadSettings()
+        startMeterTimer()
     }
 
     deinit {
+        meterTimer?.invalidate()
         deviceRefreshWorkItem?.cancel()
         if let block = hardwareDevicesListener {
             AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject),
@@ -281,6 +326,8 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         d.set(outputGainValue, forKey: PrefKey.gain)
         d.set(voicePolishEnabled, forKey: PrefKey.voicePolish)
         d.set(clarityLevel.rawValue, forKey: PrefKey.clarity)
+        d.set(inputVolumeValue, forKey: PrefKey.inputVolume)
+        d.set(smartLevelEnabled, forKey: PrefKey.smartLevel)
     }
 
     private func loadSettings() {
@@ -302,6 +349,9 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         // re-persist or reconfigure mid-load (default ON when absent).
         voicePolishEnabled = d.object(forKey: PrefKey.voicePolish) as? Bool ?? true
         clarityLevel = ClarityLevel(rawValue: d.string(forKey: PrefKey.clarity) ?? "") ?? .off
+        inputVolumeValue = d.object(forKey: PrefKey.inputVolume) != nil
+            ? SmartLevelController.clampInputVolume(d.float(forKey: PrefKey.inputVolume)) : 1.0
+        smartLevelEnabled = d.object(forKey: PrefKey.smartLevel) as? Bool ?? false
         selectedPreset = preset
         isApplyingPreset = false
         if let p = preset.parameters {  // non-custom: preset defines the values
@@ -608,6 +658,112 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         DispatchQueue.global(qos: .userInitiated).async { self.captureSession.stopRunning() }
     }
 
+    // MARK: - Input Volume, telemetry & Smart Level
+
+    private func setInputVolume(_ volume: Float) {
+        inputVolumeValue = SmartLevelController.clampInputVolume(volume)
+    }
+
+    /// Programmatic output-gain change for Smart Level — must not flip the active preset to `.custom`.
+    private func setOutputGainForSmartLevel(_ gain: Float) {
+        isApplyingPreset = true
+        outputGainValue = gain
+        isApplyingPreset = false
+        persistSettings()
+    }
+
+    private func startMeterTimer() {
+        meterTimer?.invalidate()
+        meterTimer = Timer.scheduledTimer(withTimeInterval: 0.04, repeats: true) { [weak self] _ in
+            self?.publishMeterTelemetry()
+        }
+    }
+
+    private func publishMeterTelemetry() {
+        let rawPeak = tRawInputPeak
+        let trimmedPeak = tTrimmedInputPeak
+        let outPeak = tOutputPeak
+        let trimmedHotCount = tTrimmedInputHotCount
+        let outputClipCount = tOutputClipCount
+
+        inputLevel = tInputLevel
+        rawInputPeak = rawPeak
+        trimmedInputPeak = trimmedPeak
+        outputPeak = outPeak
+        isInputNearCeiling = SmartLevelController.isNearCeiling(trimmedPeak)
+        isOutputClipping = SmartLevelController.isClipping(outPeak) || outputClipCount > 0
+        isSourceMicClipping = SmartLevelController.isSourceMicClipping(
+            rawPeak: rawPeak, rawClipSampleCount: Int(tRawInputClipCount))
+
+        let trimmedWasHot = SmartLevelController.isNearCeiling(trimmedPeak) || trimmedHotCount > 0
+        consecutiveTrimmedHotTicks = SmartLevelController.advanceHotTicks(
+            current: consecutiveTrimmedHotTicks, wasHot: trimmedWasHot)
+        let outputWasClipping = SmartLevelController.isClipping(outPeak) || outputClipCount > 0
+        consecutiveOutputClipTicks = SmartLevelController.advanceHotTicks(
+            current: consecutiveOutputClipTicks, wasHot: outputWasClipping)
+
+        tInputLevel = 0
+        tRawInputPeak = 0
+        tTrimmedInputPeak = 0
+        tOutputPeak = 0
+        tOutputClipCount = 0
+        tRawInputClipCount = 0
+        tTrimmedInputHotCount = 0
+
+        updateSmartLevel()
+    }
+
+    private func updateSmartLevel() {
+        guard smartLevelEnabled else { return }
+        let now = Date()
+        if let last = lastSmartLevelAdjustTime, now.timeIntervalSince(last) < 0.4 { return }
+
+        if isSourceMicClipping {
+            smartLevelMessage = "Source mic is clipping before NoNoise. Lower macOS/device input volume if available."
+        }
+
+        if let next = SmartLevelController.nextInputVolume(
+            current: inputVolumeValue, hotTicks: consecutiveTrimmedHotTicks, enabled: smartLevelEnabled) {
+            setInputVolume(next)
+            consecutiveTrimmedHotTicks = 0
+            lastSmartLevelAdjustTime = now
+            smartLevelMessage = "Smart Level reduced Input Volume to \(Int(next * 100))%."
+            return
+        }
+
+        if let next = SmartLevelController.nextOutputGain(
+            current: outputGainValue, outputClipTicks: consecutiveOutputClipTicks,
+            inputHotTicks: consecutiveTrimmedHotTicks, enabled: smartLevelEnabled) {
+            setOutputGainForSmartLevel(next)
+            consecutiveOutputClipTicks = 0
+            lastSmartLevelAdjustTime = now
+            smartLevelMessage = "Smart Level reduced Output Gain to \(Int(next * 100))%."
+        } else if !isInputNearCeiling && !isOutputClipping && !isSourceMicClipping {
+            smartLevelMessage = nil
+        }
+    }
+
+    private func recordInputTelemetry(rawPeak: Float, trimmedPeak: Float, rms: Float,
+                                    rawClipSamples: Int, trimmedHotSamples: Int) {
+        tInputLevel = max(tInputLevel, rms)
+        tRawInputPeak = SmartLevelController.latchPeak(existing: tRawInputPeak, bufferPeak: rawPeak)
+        tTrimmedInputPeak = SmartLevelController.latchPeak(existing: tTrimmedInputPeak, bufferPeak: trimmedPeak)
+        if rawClipSamples > 0 { tRawInputClipCount &+= Int32(rawClipSamples) }
+        if trimmedHotSamples > 0 { tTrimmedInputHotCount &+= Int32(trimmedHotSamples) }
+    }
+
+    private func recordOutputTelemetry(_ data: UnsafePointer<Float>, count: Int) {
+        var peak = tOutputPeak
+        var clipCount = tOutputClipCount
+        for i in 0..<count {
+            let mag = abs(data[i])
+            peak = max(peak, mag)
+            if mag >= SmartLevelController.clipThreshold { clipCount &+= 1 }
+        }
+        tOutputPeak = peak
+        tOutputClipCount = clipCount
+    }
+
     
     private var PermissionCheckOnce = false
     
@@ -686,18 +842,34 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         let convertedFrames = Int(outputBuffer.frameLength)
         
         if convertedFrames > 0, let floatData = outputBuffer.floatChannelData?[0] {
-             // Metering (RMS)
+             var rawPeak: Float = 0
              var sum: Float = 0
-             // Sample every 4th visual
-             for i in stride(from: 0, to: min(convertedFrames, 256), by: 4) {
-                 sum += floatData[i] * floatData[i]
+             var rawClipSamples = 0
+             for i in 0..<convertedFrames {
+                 let x = floatData[i]
+                 let mag = abs(x)
+                 rawPeak = max(rawPeak, mag)
+                 sum += x * x
+                 if mag >= SmartLevelController.clipThreshold { rawClipSamples += 1 }
              }
-             if convertedFrames > 0 {
-                 let rms = sqrt(sum / Float(min(convertedFrames, 256)/4 + 1))
-                 DispatchQueue.main.async { self.inputLevel = rms }
+             let rms = sqrt(sum / Float(convertedFrames))
+
+             var inputVolume = realtimeInputVolume
+             if inputVolume != 1 {
+                 vDSP_vsmul(floatData, 1, &inputVolume, floatData, 1, vDSP_Length(convertedFrames))
              }
-             
-             // Push 48k Float32 to RingBuffer
+
+             var trimmedPeak: Float = 0
+             var trimmedHotSamples = 0
+             for i in 0..<convertedFrames {
+                 let mag = abs(floatData[i])
+                 trimmedPeak = max(trimmedPeak, mag)
+                 if mag >= SmartLevelController.nearCeilingThreshold { trimmedHotSamples += 1 }
+             }
+
+             recordInputTelemetry(rawPeak: rawPeak, trimmedPeak: trimmedPeak, rms: rms,
+                                  rawClipSamples: rawClipSamples, trimmedHotSamples: trimmedHotSamples)
+
              _ = self.ringBuffer.write(floatData, count: convertedFrames)
         }
     }
