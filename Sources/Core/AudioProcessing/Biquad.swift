@@ -17,6 +17,13 @@ public struct Biquad {
         b0 = 1; b1 = 0; b2 = 0; a1 = 0; a2 = 0
     }
 
+    /// Set pre-computed, already-normalized (a0 == 1) biquad coefficients directly.
+    /// Used for filters whose coefficients are specified by a standard (e.g. the
+    /// ITU-R BS.1770 K-weighting stages) rather than derived from an RBJ formula.
+    public mutating func setCoefficients(b0: Float, b1: Float, b2: Float, a1: Float, a2: Float) {
+        self.b0 = b0; self.b1 = b1; self.b2 = b2; self.a1 = a1; self.a2 = a2
+    }
+
     public mutating func setHighPass(freq: Float, sampleRate: Float, q: Float = 0.707) {
         let w0 = 2 * Float.pi * max(freq, 1) / sampleRate
         let cs = cosf(w0), sn = sinf(w0)
