@@ -2,6 +2,25 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Clean Incoming / Guest (Phase 1) shipped
+- Added `IncomingCleanupEngine` — a SECOND, independent capture→clean→play pipeline that
+  de-noises the audio the user *hears* (a noisy guest/caller). Captures a loopback/aggregate
+  **INPUT** (BlackHole/Loopback) via `AVCaptureDevice(uniqueID:)`, runs its OWN `DeepFilterNetDSP`
+  (DFN only, no Voice polish), and re-plays the cleaned audio to the chosen monitor output.
+- `AudioModel` owns it as an OPTIONAL, created on the enabled transition and torn down to `nil`
+  when off (off by default; the second AI stream only runs while enabled). New persisted keys
+  `mv.incomingEnabled` / `mv.incomingSourceUID` / `mv.incomingOutputUID`.
+- Source list enumerated on the INPUT scope (`fetchIncomingDevices`) with
+  `VirtualMicRouting.isSelectableIncomingSource` (rejects physical mics via transport type +
+  `hasInput`); monitor list comes from the OUTPUT scan (`isSelectableMonitorOutput`).
+- UI: a **Clean Incoming / Guest** card in Settings (enable + *Incoming from* / *Hear on* pickers
+  + no-loopback warning), a compact toggle in the popover, and two new Setup Guide steps for the
+  loopback routing.
+- **Spike (Task S):** proved HAL enumeration surfaces BlackHole (UID + virtual transport) and that
+  `AVCaptureDevice(uniqueID:)` resolves that UID and attaches to an `AVCaptureSession`. Live
+  sample-buffer delivery is gated only by on-device TCC (mic permission), not by the design — so
+  the AVCapture-by-UID path is sound. 14 device-classification unit tests added.
+
 ### 2026-06-15 — GitHub report action added
 - Added a compact **Report** action to the menu-bar popover footer and a matching
   **Report a feature or issue** link in Settings. Both open the NoNoise Mac GitHub issue template

@@ -49,6 +49,7 @@ Everything happens **on your device**. Your audio never leaves your Mac.
 - **🔒 100% private** — fully on-device on the Neural Engine; nothing is uploaded, ever.
 - **🎛️ One-click modes** — Meeting, Podcast, Tutorial, or Custom, with strength + tone control.
 - **🎙️ Broadcast Voice** — a one-tap clarity lift (Off / Low / Medium / High) that adds studio presence and tames sibilance, so you sound clearer and more present while still sounding like *you*.
+- **🎧 Clean Incoming / Guest** — de-noise the *other* side too. Route a noisy guest or caller through a loopback device and NoNoise Mac cleans what you hear (and, optionally, what you record) with the same on-device AI — no cloud, no subscription.
 - **🛠️ Works everywhere** — any input (Built-in, USB, XLR via interface) → any app via a virtual cable.
 - **🟢 On by default** — launches actively cancelling noise; toggle from the menu bar anytime.
 - **💸 Free & open source** — MIT licensed.
@@ -140,6 +141,24 @@ If you can't install the driver (e.g. a managed Mac), NoNoise Mac also works wit
 4. **Point your apps at the cable** — in Discord / Zoom / OBS, set the **Microphone** to
    **BlackHole 2ch**.
 5. **Pick a mode** and toggle as above — noise cancellation is **ON by default**.
+
+### 🎧 Clean Incoming / Guest (hear them clean)
+
+NoNoise Mac can also clean the **other** side of a call — a guest on a noisy laptop mic, or a
+caller with a fan running — so **you** hear them de-noised in real time.
+
+macOS has no built-in per-app audio loopback, so you route the call app's **output** into a
+loopback device first, then NoNoise Mac captures and cleans it:
+
+1. Install **[BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole)** (or Loopback).
+2. In your call app (Zoom / Meet / Discord), set the **speaker / output** to **BlackHole 2ch**.
+3. In NoNoise Mac **Settings → Clean Incoming / Guest**, enable it, pick **BlackHole** as
+   *Incoming from* and your real **speakers / headphones** as *Hear on*.
+
+NoNoise Mac re-plays the **cleaned** guest audio to your chosen output, so you still hear the
+call — just de-noised. It runs a **second** on-device AI stream and is **off by default** (that
+stream only runs while enabled). For raw monitoring alongside the cleaned feed, point the call app
+at a macOS **Multi-Output Device** that includes both the loopback and your speakers.
 
 ## 💻 Advanced: dual pipelines (CLI)
 

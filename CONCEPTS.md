@@ -18,6 +18,17 @@ docs, and reviews.
 - **Render thread** — the real-time AVAudioEngine callback. Allocation-free; scalar/vDSP
   math only. See `AGENTS.md` → Real-time audio rules.
 
+## Incoming / guest cleanup
+- **Incoming / guest cleanup** — the mirror of mic cleaning: capture the call app's
+  output from a loopback/aggregate **INPUT** device, clean it with a SECOND DeepFilterNet
+  stream (`IncomingCleanupEngine`), and play it to the user's speakers (Phase 1) and/or a
+  second virtual sink for recording (Phase 2). Independent of the outgoing mic — its own
+  capture session, engine, ring buffer, and DSP state.
+- **Loopback source** — a device (BlackHole / Loopback / aggregate) the user points the call
+  app's speaker at, so its audio becomes a capturable **INPUT**. macOS has no built-in app
+  loopback, so this routing step is required.
+- **Monitor output** — the real speakers / headphones the cleaned guest audio is played to.
+
 ## DSP / DeepFilterNet
 - **DeepFilterNet3 (DFN)** — the noise-suppression neural model (stock), run via CoreML on
   the Neural Engine/GPU (`computeUnits = .all`).

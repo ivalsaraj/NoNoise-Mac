@@ -5,6 +5,30 @@ for the must-read failure modes.
 
 ---
 
+### [DECISION] 2026-06-15 — Incoming/guest cleanup is a SEPARATE engine, not a second AudioModel (@Valsaraj)
+- **Problem:** Cleaning the *other* side of a call (a noisy guest) is the mirror of mic cleaning, so it's tempting to reuse `AudioModel` or its render path.
+- **Decision:** Ship a standalone `IncomingCleanupEngine` that owns its OWN `AVCaptureSession`, `AVAudioEngine`, `RingBuffer`, and `DeepFilterNetDSP`. It must NOT touch the mic path or the NoNoise Mic sink, and it runs DeepFilterNet **only** — no `VoiceChain`/Broadcast Voice (that polish is voice-shaping for the outgoing mic, wrong for arbitrary guest audio). Keeps the two pipelines independently startable and avoids coupling render-thread state.
+- **Rule:** A second cleaning pipeline gets its own engine + its own DSP instance (own recurrent state). Never share DeepFilterNet streaming state between the mic and incoming paths.
+- **Files:** `Sources/Core/AudioProcessing/IncomingCleanupEngine.swift`, `Sources/Core/AudioModel.swift`.
+
+### [DECISION] 2026-06-15 — Incoming engine is a lazy-OWNED optional, off by default (zero-cost when off) (@Valsaraj)
+- **Problem:** `DeepFilterNetDSP.init()` allocates ML buffers and async-loads the CoreML model. A stored `let` incoming engine would pay that cost at launch even for users who never clean incoming audio.
+- **Decision:** `AudioModel` holds `IncomingCleanupEngine?` (OPTIONAL, never a stored `let`). `applyIncomingCleanup()` CREATES it on the enabled transition and releases it to `nil` when disabled. Feature is OFF by default; the second AI stream only runs while enabled. Persisted via `mv.incomingEnabled` / `mv.incomingSourceUID` / `mv.incomingOutputUID` and re-applied after `loadSettings()`.
+- **Rule:** Any heavy, optional audio engine (ML model load) must be lazily created on enable and torn down to `nil` on disable — never instantiated at launch.
+- **Files:** `Sources/Core/AudioModel.swift` (`applyIncomingCleanup`, `persistIncomingSettings`, `loadSettings`).
+
+### [GOTCHA] 2026-06-15 — Incoming SOURCE is input-scope (reject physical mics); MONITOR is output-scope (@Valsaraj)
+- **Symptom:** A naïve device list either offers the user's physical mic as an "incoming source" (nonsense) or persists the wrong monitor device.
+- **Root cause:** Source and monitor come from DIFFERENT HAL scopes and DIFFERENT maps. Conflating them surfaces physical mics as sources or saves a source UID where a monitor UID belongs.
+- **Fix/Rule:** Enumerate sources on the **INPUT** scope (`fetchIncomingDevices`) and filter with `VirtualMicRouting.isSelectableIncomingSource`, which REJECTS physical mics via `DeviceInfo.transportType` (virtual/aggregate) + `hasInput` — only loopback/aggregate inputs qualify. Enumerate monitors on the **OUTPUT** scan (`isSelectableMonitorOutput`) and ALWAYS persist the monitor UID from `monitorOutputUIDByID` (the output map), never from the input-source map.
+- **Files:** `Sources/Core/AudioProcessing/VirtualMicRouting.swift`, `Sources/Core/AudioModel.swift` (`fetchIncomingDevices`, `fetchOutputDevices`, `persistIncomingSettings`).
+
+### [GOTCHA] 2026-06-15 — Capture a HAL device by UID via AVCaptureDevice(uniqueID:); live buffers are TCC-gated (@Valsaraj)
+- **Symptom:** Spike captured nothing from BlackHole at first; easy to misread as "AVCapture can't see virtual devices."
+- **Root cause:** `AVCaptureDevice(uniqueID:)` DOES resolve a CoreAudio device's real `kAudioDevicePropertyDeviceUID` and attaches to an `AVCaptureSession` — but live sample-buffer delivery requires microphone (TCC) permission, which a bare spike binary lacks.
+- **Fix/Rule:** Resolve the incoming source by its real HAL UID (not name) through `AVCaptureDevice(uniqueID:)`; match the Task-S spike. If buffers don't arrive, suspect TCC/mic permission of the host process FIRST — the resolution + attach path is proven sound.
+- **Files:** `Sources/Core/AudioProcessing/IncomingCleanupEngine.swift` (`configureCapture`).
+
 ### [DECISION] 2026-06-15 — Input Volume is app-level pre-DSP trim, not hardware volume (@Valsaraj)
 - **Problem:** Hot mics clip or sound crushed/harsh after NoNoise processing; users expect a macOS-like "Input Volume" control.
 - **Decision:** Ship **Input Volume** as an app-level scalar applied after conversion and before the ring buffer (`mv.inputVolume`). Do not write macOS system/hardware input volume — keeps behavior reversible, per-app, and consistent across USB/BT/built-in mics. Pair with optional **Smart Level** that only *reduces* gain when peaks repeatedly hit ~0.98; never auto-boosts.
