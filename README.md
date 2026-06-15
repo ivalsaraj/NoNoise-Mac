@@ -49,6 +49,7 @@ Everything happens **on your device**. Your audio never leaves your Mac.
 - **🔒 100% private** — fully on-device on the Neural Engine; nothing is uploaded, ever.
 - **🎛️ One-click modes** — Meeting, Podcast, Tutorial, or Custom, with strength + tone control.
 - **🎙️ Broadcast Voice** — a one-tap clarity lift (Off / Low / Medium / High) that adds studio presence and tames sibilance, so you sound clearer and more present while still sounding like *you*.
+- **🫦 Mouth Noise** — an optional de-plosive (P-pop / B-thump suppressor) and de-click (lip-smack / mouth-click suppressor) stage (Off / Low / Medium / High). Both are identity at rest — only the artifact is removed, never the voice.
 - **🛠️ Works everywhere** — any input (Built-in, USB, XLR via interface) → any app via a virtual cable.
 - **🟢 On by default** — launches actively cancelling noise; toggle from the menu bar anytime.
 - **💸 Free & open source** — MIT licensed.
@@ -67,6 +68,15 @@ Your selection (and any fine-tuning) is remembered between launches.
 ### 🎙️ Broadcast Voice
 
 An optional clarity enhancement layered on top of any mode. It pairs a gentle, wide presence lift with an automatic de-esser, so added "air" never becomes harsh sibilance. **Off** by default; **Low / Medium / High** increase the effect. It is designed to be transparent — a peaking bell with unity gain at the low end and a de-esser that only acts on real "ess" sounds — so it preserves the identity of your voice.
+
+### 🫦 Mouth Noise
+
+Two targeted artifact suppressors that live after the de-esser in the chain:
+
+- **De-plosive**: detects P-pop / B-thump transients by watching the ratio of low-band energy (< 120 Hz) to total energy. Only subtractively ducks the low band when both the energy level and the low-heavy ratio exceed their thresholds — so normal voiced stops (B, D, G) pass through untouched.
+- **De-click**: tracks a fast envelope vs. a slow background RMS. When the fast/slow ratio spikes beyond `clickRatio` (6×), a brief (4 ms) gain reduction is applied. Normal speech never sustains this ratio.
+
+Both stages are **Off by default** and are **identity at rest** — verified by XCTest. They are orthogonal to Broadcast Voice and the noise preset.
 
 ## 📥 Install
 

@@ -48,6 +48,12 @@ docs, and reviews.
   Unity gain at DC/Nyquist, so the vocal body/identity is untouched.
 - **De-esser** — a subtractive split-band sibilance controller
   (`out = x − frac·sib`). Identity at rest; only acts on loud sibilant transients.
+- **Mouth Noise Finishers** — two identity-at-rest DSP stages after the de-esser:
+  - **De-plosive** (`DePlosive`): subtractive low-band gate. `out = x − frac·lowSig`
+    when the low-band ratio and total energy both exceed thresholds. Identity otherwise.
+  - **De-click** (`DeClick`): broadband transient gate. `out = x × gain` where
+    `gain < 1` only during brief (< 5 ms) fast/slow envelope ratio spikes. Identity otherwise.
+  - Controlled by `MouthNoiseLevel` (off/low/medium/high); persisted under `mv.mouthNoise`.
 - **Biquad** — RBJ-cookbook second-order IIR filter (TDF-II).
 - **Compressor** — log-domain feed-forward dynamics (threshold/ratio/attack/release/makeup).
 - **Limiter** — fast peak limiter + hard clamp; the final overflow guard (ceiling dB).

@@ -167,3 +167,20 @@ for the must-read failure modes.
 - `minGain(forAttenuationDb:)`, `resolveOutputBin(...)`, and the `VoiceChain` value types
   (`Biquad`/`Compressor`/`Limiter`) are unit-tested without CoreML. New DSP math should
   follow the same shape (30 tests currently cover this).
+
+### [DECISION] 2026-06-15 — Mouth-noise finishers: subtractive detection preserves voice character
+- **Problem**: P-pops and mouth clicks cannot be removed by EQ or de-essing alone — they
+  span the wrong frequency bands and timescales.
+- **Decision**: (1) `DePlosive` uses a dual-threshold detector (total energy AND low/total
+  ratio) to distinguish plosive thumps from voiced stops (B, D, G). Only when BOTH gates
+  fire does it subtractively duck the low band (`out = x − frac·lowSig`) — leaving the
+  mid-range voice body untouched. (2) `DeClick` uses a fast/slow envelope ratio — a click
+  appears as an anomalous spike relative to the speech background — and applies a hold-and-
+  release gain only for a few milliseconds, too brief to affect any voiced phoneme.
+- **Rule**: Any transient-targeted artifact suppressor must have a dual-gate (absolute
+  threshold + relative detection) and be tested for identity below threshold AND
+  preservation of the nearest voiced phoneme (voiced stop at the same level as the
+  artifact). Single-threshold detection is prone to false positives on consonant bursts.
+- **Files**: `Sources/Core/AudioProcessing/Dynamics.swift`,
+  `Sources/Core/AudioProcessing/VoiceChain.swift`,
+  `Tests/NoNoiseMacTests/MouthNoiseTests.swift`

@@ -2,6 +2,16 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Mouth-Noise Finishers (de-plosive + de-click) added
+
+Added two new identity-at-rest `VoiceChain` stages after the de-esser:
+`DePlosive` (subtractive low-band plosive gate, `out = x − frac·lowSig`) and
+`DeClick` (broadband transient gate, `out = x × gain`). Both are pure value types
+in `Dynamics.swift`, gated by `MouthNoiseLevel` (off/low/medium/high) carried on
+`VoiceChainSettings` and injected by `AudioModel.applyVoiceChain()`. Persisted
+under `mv.mouthNoise`. UI: segmented picker in Settings and the popover. Design
+invariant — identity at rest — enforced structurally and proven by XCTest.
+
 ### 2026-06-15 — GitHub report action added
 - Added a compact **Report** action to the menu-bar popover footer and a matching
   **Report a feature or issue** link in Settings. Both open the NoNoise Mac GitHub issue template
