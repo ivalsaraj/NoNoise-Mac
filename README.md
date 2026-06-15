@@ -49,7 +49,7 @@ Everything happens **on your device**. Your audio never leaves your Mac.
 - **🔒 100% private** — fully on-device on the Neural Engine; nothing is uploaded, ever.
 - **🎛️ One-click modes** — Meeting, Podcast, Tutorial, or Custom, with strength + tone control.
 - **🎙️ Broadcast Voice** — a one-tap clarity lift (Off / Low / Medium / High) that adds studio presence and tames sibilance, so you sound clearer and more present while still sounding like *you*.
-- **🎧 Clean Incoming / Guest** — de-noise the *other* side too. Route a noisy guest or caller through a loopback device and NoNoise Mac cleans what you hear (and, optionally, what you record) with the same on-device AI — no cloud, no subscription.
+- **🎧 Clean Incoming / Guest** — de-noise the *other* side too. Route a noisy guest or caller through a loopback device and NoNoise Mac cleans **what you hear** in real time with the same on-device AI — no cloud, no subscription.
 - **🛠️ Works everywhere** — any input (Built-in, USB, XLR via interface) → any app via a virtual cable.
 - **🟢 On by default** — launches actively cancelling noise; toggle from the menu bar anytime.
 - **💸 Free & open source** — MIT licensed.

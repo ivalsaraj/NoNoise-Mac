@@ -159,8 +159,8 @@ struct ContentView: View {
                     .labelsHidden().toggleStyle(.switch)
             }
             if audioModel.incomingCleanupEnabled {
-                Text(audioModel.incomingSourceUID.isEmpty
-                     ? "Pick a loopback source in Settings."
+                Text(audioModel.incomingSourceUID.isEmpty || audioModel.incomingOutputDeviceID == 0
+                     ? "Pick a loopback source and output in Settings."
                      : "Cleaning the guest you hear.")
                     .font(.caption2).foregroundColor(.secondary)
             }

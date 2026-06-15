@@ -1,4 +1,5 @@
 import SwiftUI
+import CoreAudio
 import Core
 
 struct SettingsView: View {
@@ -255,6 +256,7 @@ struct GeneralSettingsView: View {
                 HStack(spacing: 10) {
                     Text("Hear on").font(.subheadline).frame(width: 110, alignment: .leading)
                     Picker("", selection: $audioModel.incomingOutputDeviceID) {
+                        Text("Select…").tag(AudioObjectID(0))
                         ForEach(audioModel.monitorOutputDevices) { dev in
                             Text(dev.name).tag(dev.id)
                         }

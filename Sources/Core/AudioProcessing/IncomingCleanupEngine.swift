@@ -68,11 +68,29 @@ public final class IncomingCleanupEngine: NSObject, AVCaptureAudioDataOutputSamp
     }
 
     /// Begin cleaning: capture `sourceDeviceUID`, play to `monitorDeviceID`. Idempotent.
-    public func start(sourceDeviceUID: String, monitorDeviceID: AudioObjectID) {
+    /// Returns `true` ONLY once the playback graph is actually live AND capture has been kicked off;
+    /// returns `false` (fully torn down) if the source can't be resolved/attached OR the monitor
+    /// can't be pinned / the audio engine can't start. The owner then releases this engine, so a
+    /// half-open start never leaves the second CoreML pipeline resident with no audible output.
+    @discardableResult
+    public func start(sourceDeviceUID: String, monitorDeviceID: AudioObjectID) -> Bool {
         stop()                                   // clean slate (rebuild capture + engine)
-        configureCapture(sourceDeviceUID: sourceDeviceUID)
-        configurePlayback(monitorDeviceID: monitorDeviceID)
+        guard configureCapture(sourceDeviceUID: sourceDeviceUID) else {
+            // Source couldn't be resolved/attached — nothing was started; owner releases us.
+            return false
+        }
+        guard configurePlayback(monitorDeviceID: monitorDeviceID) else {
+            // Monitor couldn't be pinned or the engine refused to start. Tear down the attached-
+            // but-idle capture graph so we never retain a running/half-open pipeline that produces
+            // NO audible output (false-positive "started"). Owner releases us on the false return.
+            stop()
+            return false
+        }
+        // Playback is live; only NOW pull capture so the ring fills into a ready graph (a few ms of
+        // silence at most). `[weak self]` so a teardown that races this never revives a dead capture.
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in self?.captureSession.startRunning() }
         running = true
+        return true
     }
 
     /// Stop and fully tear down. The OWNER releases the whole engine to nil after this, so the
@@ -80,7 +98,11 @@ public final class IncomingCleanupEngine: NSObject, AVCaptureAudioDataOutputSamp
     /// zero cost when off). `engine.reset()` does NOT detach the source node — keep `sourceNode`
     /// attached across stop/start within one instance; the instance is short-lived anyway.
     public func stop() {
-        guard running || captureSession.isRunning || engine.isRunning else { return }
+        // Also tear down when the graph is ATTACHED-but-idle (inputs added, capture not yet started):
+        // that's the `start()` playback-failure path, where nothing is "running" yet but the capture
+        // input still needs removing. Without `!inputs.isEmpty` here, stop() would no-op and leak it.
+        guard running || captureSession.isRunning || engine.isRunning
+                || !captureSession.inputs.isEmpty else { return }
         captureSession.stopRunning()
         captureSession.beginConfiguration()
         captureSession.inputs.forEach { captureSession.removeInput($0) }
@@ -93,42 +115,59 @@ public final class IncomingCleanupEngine: NSObject, AVCaptureAudioDataOutputSamp
 
     // MARK: - Capture (loopback INPUT device, resolved by UID via the HAL)
 
-    private func configureCapture(sourceDeviceUID: String) {
-        // PROVISIONAL until Task-S spike passes: AVCaptureDevice.DiscoverySession misses loopback
-        // devices. The spike proved AVCaptureDevice(uniqueID:) RESOLVES a BlackHole HAL UID to a
-        // real AVCaptureHALDevice; live sample-buffer delivery is gated only by mic TCC permission
-        // (the app holds com.apple.security.device.audio-input). The picker (Task 3) enumerates via
-        // the HAL and hands us that UID.
+    /// Resolve + ATTACH the loopback source (does NOT start the session — `start()` kicks capture
+    /// off only after playback is confirmed live). Returns `false` if the device can't be resolved
+    /// or the input/output can't be added, so `start()` won't open a dead graph.
+    private func configureCapture(sourceDeviceUID: String) -> Bool {
+        // AVCaptureDevice.DiscoverySession misses loopback devices, but AVCaptureDevice(uniqueID:)
+        // RESOLVES a BlackHole HAL UID to a real AVCaptureHALDevice (proven by the Task-S spike);
+        // live sample-buffer delivery is gated only by mic TCC permission (the app holds
+        // com.apple.security.device.audio-input). The picker (Task 3) enumerates via the HAL and
+        // hands us that UID.
         guard let device = AVCaptureDevice(uniqueID: sourceDeviceUID) else {
             print("IncomingCleanupEngine: source device not found: \(sourceDeviceUID)")
-            return
+            return false
         }
         captureSession.beginConfiguration()
         captureSession.inputs.forEach { captureSession.removeInput($0) }
         captureSession.outputs.forEach { captureSession.removeOutput($0) }
+        var added = false
         do {
             let input = try AVCaptureDeviceInput(device: device)
-            if captureSession.canAddInput(input) { captureSession.addInput(input) }
-            if captureSession.canAddOutput(captureOutput) {
-                captureSession.addOutput(captureOutput)
-                captureOutput.setSampleBufferDelegate(self, queue: processingQueue)
+            if captureSession.canAddInput(input) {
+                captureSession.addInput(input)
+                if captureSession.canAddOutput(captureOutput) {
+                    captureSession.addOutput(captureOutput)
+                    captureOutput.setSampleBufferDelegate(self, queue: processingQueue)
+                    added = true
+                }
             }
         } catch {
             print("IncomingCleanupEngine capture error: \(error)")
         }
         captureSession.commitConfiguration()
-        DispatchQueue.global(qos: .userInitiated).async { self.captureSession.startRunning() }
+        return added                              // started later by start(), after playback is live
     }
 
     // MARK: - Playback (to the user's monitor output)
 
-    private func configurePlayback(monitorDeviceID: AudioObjectID) {
+    /// Pin the chosen monitor, wire the graph, and start the engine. Returns `false` (caller tears
+    /// down) if the monitor can't be pinned or the engine won't start — never reports success for a
+    /// graph that isn't actually playing.
+    private func configurePlayback(monitorDeviceID: AudioObjectID) -> Bool {
         engine.stop(); engine.reset()
         if monitorDeviceID != 0 {
             var dev = monitorDeviceID
             let size = UInt32(MemoryLayout<AudioObjectID>.size)
-            AudioUnitSetProperty(outputNode.audioUnit!, kAudioOutputUnitProperty_CurrentDevice,
-                                 kAudioUnitScope_Global, 0, &dev, size)
+            let status = AudioUnitSetProperty(outputNode.audioUnit!, kAudioOutputUnitProperty_CurrentDevice,
+                                              kAudioUnitScope_Global, 0, &dev, size)
+            // If we can't PIN the chosen monitor, refuse to start: letting the output unit fall back
+            // to the system DEFAULT output risks routing the cleaned audio into the very loopback we
+            // capture — the exact feedback loop the owner's monitor guard exists to prevent.
+            guard status == noErr else {
+                print("IncomingCleanupEngine: could not set monitor device \(monitorDeviceID): \(status)")
+                return false
+            }
         }
         // Attach the source node ONCE per instance. `engine.reset()` (in `stop`) tears down the
         // render state but does NOT detach attached nodes, so re-attaching would throw / duplicate.
@@ -138,7 +177,13 @@ public final class IncomingCleanupEngine: NSObject, AVCaptureAudioDataOutputSamp
         }
         engine.connect(sourceNode, to: mainMixer, format: AudioUtils.shared.processingFormat)
         engine.connect(mainMixer, to: outputNode, format: nil)
-        do { try engine.start() } catch { print("IncomingCleanupEngine engine error: \(error)") }
+        do {
+            try engine.start()
+        } catch {
+            print("IncomingCleanupEngine engine error: \(error)")
+            return false
+        }
+        return true
     }
 
     // MARK: - Capture delegate (→ 48k mono → ring), mirrors AudioModel.captureOutput

@@ -2,6 +2,21 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Clean Incoming / Guest — code-review hardening (Codex 4-round, APPROVED)
+- HAL capability detection now SUMS `AudioBufferList.mBuffers[*].mNumberChannels` instead of using
+  `AudioObjectGetPropertyDataSize > 0` — the latter reports phantom channels (non-zero header for a
+  zero-channel scope) and could misclassify an input-only mic as a monitor output.
+- Feedback guard: `applyIncomingCleanup()` refuses to run without a chosen REAL monitor
+  (`incomingOutputDeviceID != 0` + both predicates re-validated); the "Hear on" picker gained an
+  explicit "Select…" state. It never falls back to the system default output (which would feed back
+  through the captured loopback).
+- Lifecycle is now truthful + strictly zero-cost-when-off: `IncomingCleanupEngine.start()` returns
+  `Bool` (true ONLY when capture attach + monitor pin + `engine.start()` all succeed; capture is
+  started only after playback is live), `AudioModel` retains the engine ONLY on a true start, and
+  `refreshDevicesAfterHardwareChange()` re-validates/tears-down on device add/remove. `stop()` also
+  cleans up the attached-but-idle state so playback-failure teardown is deterministic.
+- Verified via `swift build` + 89 unit tests green; live-audio paths remain manual smoke.
+
 ### 2026-06-15 — Hot mic ceiling fix
 - Input metering now reflects the trimmed NoNoise input signal instead of raw pre-trim RMS, so
   lowering Input Volume visibly lowers the meter while raw mic clipping still shows a separate

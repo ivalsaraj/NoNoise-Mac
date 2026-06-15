@@ -426,15 +426,34 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     /// constructed ONLY when enabled with a valid source, and released to nil otherwise, so a
     /// disabled feature holds zero ANE/CPU/memory.
     private func applyIncomingCleanup() {
-        guard incomingCleanupEnabled, !incomingSourceUID.isEmpty else {
+        // Tear down unless the feature is FULLY and VALIDLY configured. We require BOTH a real
+        // loopback source AND a chosen real monitor output, each re-validated against the canonical
+        // predicates (a persisted device may have changed identity/role since it was saved).
+        // Requiring a chosen REAL monitor is load-bearing: with no monitor, playback would fall to
+        // the system DEFAULT output — and if that default is the very loopback being captured (the
+        // setup points the call app's speaker at it), that is a FEEDBACK loop. "No valid monitor"
+        // therefore means "do not run", never "fall back to default".
+        guard incomingCleanupEnabled,
+              !incomingSourceUID.isEmpty,
+              incomingOutputDeviceID != 0,
+              let sourceInfo = deviceInfo(for: deviceID(forUID: incomingSourceUID)),
+              VirtualMicRouting.isSelectableIncomingSource(sourceInfo),
+              let monitorInfo = deviceInfo(for: incomingOutputDeviceID),
+              VirtualMicRouting.isSelectableMonitorOutput(monitorInfo) else {
             incomingEngine?.stop()
             incomingEngine = nil          // release allocations + CoreML model
             return
         }
         // Lazily construct on first enable (DeepFilterNetDSP.init allocates + async-loads here).
+        // Retain the engine ONLY if it actually starts: a failed capture attach must not leave the
+        // second CoreML pipeline (model + buffers) resident — that would break zero-cost-when-off.
         let engine = incomingEngine ?? IncomingCleanupEngine()
-        incomingEngine = engine
-        engine.start(sourceDeviceUID: incomingSourceUID, monitorDeviceID: incomingOutputDeviceID)
+        if engine.start(sourceDeviceUID: incomingSourceUID, monitorDeviceID: incomingOutputDeviceID) {
+            incomingEngine = engine
+        } else {
+            engine.stop()
+            incomingEngine = nil
+        }
     }
 
     private func persistIncomingSettings() {
@@ -505,16 +524,29 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
             AudioObjectGetPropertyData(id, &hiddenAddr, 0, nil, &hiddenSize, &hidden)
         }
 
-        // Input / output capability (stream-config size > 0 means the scope has channels).
-        func hasChannels(scope: AudioObjectPropertyScope) -> Bool {
+        // Input / output capability — SUM the AudioBufferList channel counts; do NOT trust the
+        // property data size alone. kAudioDevicePropertyStreamConfiguration returns a non-empty
+        // AudioBufferList header even when a scope has ZERO streams (mNumberBuffers == 0), so a
+        // `size > 0` check reports phantom channels and would misclassify devices (e.g. an
+        // input-only mic offered as a monitor output, or an output-only device as an incoming
+        // source). Only a positive mNumberChannels sum proves the scope actually has channels.
+        func channelCount(scope: AudioObjectPropertyScope) -> Int {
             var cfgAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
                                                      mScope: scope, mElement: 0)
             var cfgSize: UInt32 = 0
-            AudioObjectGetPropertyDataSize(id, &cfgAddr, 0, nil, &cfgSize)
-            return cfgSize > 0
+            guard AudioObjectGetPropertyDataSize(id, &cfgAddr, 0, nil, &cfgSize) == noErr, cfgSize > 0
+            else { return 0 }
+            let raw = UnsafeMutableRawPointer.allocate(byteCount: Int(cfgSize),
+                                                       alignment: MemoryLayout<AudioBufferList>.alignment)
+            defer { raw.deallocate() }
+            guard AudioObjectGetPropertyData(id, &cfgAddr, 0, nil, &cfgSize, raw) == noErr else { return 0 }
+            let listPtr = UnsafeMutableAudioBufferListPointer(raw.assumingMemoryBound(to: AudioBufferList.self))
+            var channels = 0
+            for buf in listPtr { channels += Int(buf.mNumberChannels) }
+            return channels
         }
-        let hasInput = hasChannels(scope: kAudioObjectPropertyScopeInput)
-        let hasOutput = hasChannels(scope: kAudioObjectPropertyScopeOutput)
+        let hasInput = channelCount(scope: kAudioObjectPropertyScopeInput) > 0
+        let hasOutput = channelCount(scope: kAudioObjectPropertyScopeOutput) > 0
 
         // Transport type (FourCharCode → UInt32). Absent → 0 (Unknown).
         var transport: UInt32 = 0
@@ -816,6 +848,11 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         fetchOutputDevices()
         fetchIncomingDevices()   // refresh loopback sources when BlackHole/Loopback is added/removed
         resolveVirtualMicLifecycle()
+        // Re-validate the incoming engine against the new device set: tear it down if the selected
+        // source/monitor vanished or changed role, (re)start it if a valid selection reappeared.
+        // Reads the HAL directly (deviceInfo/deviceID), so it's correct even before the fetch*
+        // results publish on the next runloop.
+        applyIncomingCleanup()
     }
 
     private func startCapture() {
