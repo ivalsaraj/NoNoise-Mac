@@ -123,6 +123,12 @@ class DeepFilterNetDSP {
     /// `Self.maxAttenuationLimitDb` the limit is disabled (full suppression).
     public var attenuationLimitDb: Float = DeepFilterNetDSP.maxAttenuationLimitDb
 
+    /// Smoothed "AI working hard" signal in [0, 1] — the energy-weighted average
+    /// per-bin suppression applied last hop, one-pole smoothed. Written on the DSP
+    /// thread, read from main (lock-free scalar; atomic on arm64 — same pattern as
+    /// `outputGain`). UX hint only; NOT a model-quality guarantee.
+    public var aiActivity: Float = 0
+
     /// At/above this dB value the attenuation limit is treated as "unlimited"
     /// (minGain = 0 → the model may fully suppress a bin).
     static let maxAttenuationLimitDb: Float = 100.0
@@ -318,6 +324,15 @@ class DeepFilterNetDSP {
         let s = min(max(strength, 0), 1)
         return (dryR * (1 - s) + wR * s, dryI * (1 - s) + wI * s)
     }
+
+    /// Per-bin suppression "activity": how much the enhanced (wet) magnitude was
+    /// reduced relative to the dry magnitude, clamped to [0, 1]. 0 = no reduction
+    /// (or silence / wet ≥ dry), 1 = fully suppressed. Pure → unit-testable.
+    static func binActivity(dryMag: Float, wetMag: Float) -> Float {
+        guard dryMag > 1e-9 else { return 0 }
+        let reduction = 1 - wetMag / dryMag
+        return min(max(reduction, 0), 1)
+    }
     
     func initHiddenStates() {
         // No-op (handled in init)
@@ -495,6 +510,8 @@ class DeepFilterNetDSP {
                 // unchanged (see resolveOutputBin fast path) — no regression.
                 let strength = suppressionStrength
                 let minG = Self.minGain(forAttenuationDb: attenuationLimitDb)
+                var actWeightSum: Float = 0     // Σ dryMag (energy weight)
+                var actValueSum: Float = 0      // Σ dryMag · binActivity
                 for i in 0..<481 {
                     let iNum = NSNumber(value: i)
                     // enhanced is 5D [1,1,1,481,2] — enhanced complex spec (wet).
@@ -506,7 +523,17 @@ class DeepFilterNetDSP {
                         strength: strength, minGain: minG)
                     realOut[i] = outR
                     imaginaryOut[i] = outI
+                    // AI-activity (telemetry only): energy-weighted per-bin reduction
+                    // of the model's enhanced (wet) magnitude vs. the dry magnitude.
+                    let dMag = sqrtf(rawSpecScratch[i*2] * rawSpecScratch[i*2] + rawSpecScratch[i*2+1] * rawSpecScratch[i*2+1])
+                    let wMag = sqrtf(wetR * wetR + wetI * wetI)
+                    let act = Self.binActivity(dryMag: dMag, wetMag: wMag)
+                    actWeightSum += dMag
+                    actValueSum += dMag * act
                 }
+                let hopActivity = actWeightSum > 1e-9 ? actValueSum / actWeightSum : 0
+                let smooth: Float = 0.85   // one-pole smoothing across hops
+                aiActivity = smooth * aiActivity + (1 - smooth) * hopActivity
                 
                 // Mirror for IFFT (conjugate-symmetric upper half)
                  for i in 1..<480 {
@@ -517,6 +544,10 @@ class DeepFilterNetDSP {
             } catch {
                 print("DSP: Inference Error: \(error)")
             }
+        } else {
+            // Model not loaded yet: decay the activity readout toward 0 so the HUD
+            // doesn't freeze on a stale "AI working hard" value (telemetry only).
+            aiActivity *= 0.85
         }
         
         // 5. ISTFT
