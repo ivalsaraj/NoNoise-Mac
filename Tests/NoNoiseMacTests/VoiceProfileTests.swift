@@ -241,4 +241,44 @@ final class VoiceProfileTests: XCTestCase {
         XCTAssertEqual(store.profiles.first?.name, "Future")
         XCTAssertEqual(store.profiles.first?.preset, .tutorial)
     }
+
+    // MARK: - applyProfile shape contract (pure logic, no AudioModel)
+
+    /// Verify that the VoiceProfile produced by "save current settings" round-trips
+    /// through the store and can be reconstructed exactly — this is the invariant
+    /// that applyProfile must restore. Tested here without AudioModel.
+    func testSavedProfileMatchesInputSettings() throws {
+        let preset = VoicePreset.podcast
+        let profile = VoiceProfile(
+            name: "Consistency Check",
+            preset: preset,
+            suppressionStrength: 0.75,
+            attenuationLimitDb: 30.0,
+            outputGainValue: 1.3,
+            voicePolishEnabled: false,
+            clarityLevel: .high
+        )
+        var store = VoiceProfileStore()
+        store.save(profile)
+        let data = try store.encodeToJSON()
+        let restored = try VoiceProfileStore.decode(from: data)
+        let r = try XCTUnwrap(restored.profile(id: profile.id))
+        XCTAssertEqual(r.suppressionStrength, profile.suppressionStrength, accuracy: 1e-6)
+        XCTAssertEqual(r.attenuationLimitDb, profile.attenuationLimitDb, accuracy: 1e-6)
+        XCTAssertEqual(r.outputGainValue, profile.outputGainValue, accuracy: 1e-6)
+        XCTAssertEqual(r.voicePolishEnabled, profile.voicePolishEnabled)
+        XCTAssertEqual(r.clarityLevel, profile.clarityLevel)
+        XCTAssertEqual(r.preset, profile.preset)
+    }
+
+    /// Verify that ordering is preserved across a JSON encode/decode round-trip
+    /// (the UI must show profiles in the order they were saved, not sorted).
+    func testStorePreservesInsertionOrderAfterRoundTrip() throws {
+        var store = VoiceProfileStore()
+        let names = ["First", "Second", "Third"]
+        names.forEach { store.save(VoiceProfile.makeDefault(name: $0)) }
+        let data = try store.encodeToJSON()
+        let restored = try VoiceProfileStore.decode(from: data)
+        XCTAssertEqual(restored.profiles.map(\.name), names)
+    }
 }
