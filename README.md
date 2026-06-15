@@ -60,7 +60,7 @@ Everything happens **on your device**. Your audio never leaves your Mac.
 |---|---|---|---|
 | **Meeting** | Calls / max noise removal | Full | Off (raw, uncolored) |
 | **Podcast** | Warm, natural voice | Full, natural floor | On (warm) |
-| **Tutorial** | Screen recordings | Full + makeup gain | On (bright & loud) |
+| **Tutorial** | Screen recordings | Full | On (clear/present) |
 | **Custom** | Your own balance | Your `Strength` + `Reduction Limit` | On (balanced) |
 
 Your selection (and any fine-tuning) is remembered between launches.

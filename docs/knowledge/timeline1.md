@@ -2,6 +2,13 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-15 — Hot mic ceiling fix
+- Input metering now reflects the trimmed NoNoise input signal instead of raw pre-trim RMS, so
+  lowering Input Volume visibly lowers the meter while raw mic clipping still shows a separate
+  source-warning state.
+- Tutorial mode no longer adds hidden loudness by default: output gain is unity and compressor
+  makeup is zero. Smart Level can now protect down to the manual 25% Input Volume floor.
+
 ### 2026-06-15 — Clean Incoming / Guest (Phase 1) shipped
 - Added `IncomingCleanupEngine` — a SECOND, independent capture→clean→play pipeline that
   de-noises the audio the user *hears* (a noisy guest/caller). Captures a loopback/aggregate

@@ -853,21 +853,27 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         let rawPeak = tRawInputPeak
         let trimmedPeak = tTrimmedInputPeak
         let outPeak = tOutputPeak
-        let trimmedHotCount = tTrimmedInputHotCount
         let outputClipCount = tOutputClipCount
+        let inputDecision = SmartLevelController.evaluateInputGuard(
+            telemetry: SmartLevelController.InputTelemetry(
+                rawPeak: rawPeak,
+                trimmedPeak: trimmedPeak,
+                trimmedRMS: tInputLevel,
+                rawClipSamples: Int(tRawInputClipCount),
+                trimmedHotSamples: Int(tTrimmedInputHotCount)),
+            currentHotTicks: consecutiveTrimmedHotTicks,
+            currentInputVolume: inputVolumeValue,
+            smartLevelEnabled: smartLevelEnabled)
 
-        inputLevel = tInputLevel
+        inputLevel = inputDecision.inputLevel
         rawInputPeak = rawPeak
         trimmedInputPeak = trimmedPeak
         outputPeak = outPeak
-        isInputNearCeiling = SmartLevelController.isNearCeiling(trimmedPeak)
+        isInputNearCeiling = inputDecision.isInputNearCeiling
         isOutputClipping = SmartLevelController.isClipping(outPeak) || outputClipCount > 0
-        isSourceMicClipping = SmartLevelController.isSourceMicClipping(
-            rawPeak: rawPeak, rawClipSampleCount: Int(tRawInputClipCount))
+        isSourceMicClipping = inputDecision.isSourceMicClipping
 
-        let trimmedWasHot = SmartLevelController.isNearCeiling(trimmedPeak) || trimmedHotCount > 0
-        consecutiveTrimmedHotTicks = SmartLevelController.advanceHotTicks(
-            current: consecutiveTrimmedHotTicks, wasHot: trimmedWasHot)
+        consecutiveTrimmedHotTicks = inputDecision.consecutiveTrimmedHotTicks
         let outputWasClipping = SmartLevelController.isClipping(outPeak) || outputClipCount > 0
         consecutiveOutputClipTicks = SmartLevelController.advanceHotTicks(
             current: consecutiveOutputClipTicks, wasHot: outputWasClipping)
@@ -1012,33 +1018,13 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         let convertedFrames = Int(outputBuffer.frameLength)
         
         if convertedFrames > 0, let floatData = outputBuffer.floatChannelData?[0] {
-             var rawPeak: Float = 0
-             var sum: Float = 0
-             var rawClipSamples = 0
-             for i in 0..<convertedFrames {
-                 let x = floatData[i]
-                 let mag = abs(x)
-                 rawPeak = max(rawPeak, mag)
-                 sum += x * x
-                 if mag >= SmartLevelController.clipThreshold { rawClipSamples += 1 }
-             }
-             let rms = sqrt(sum / Float(convertedFrames))
-
-             var inputVolume = realtimeInputVolume
-             if inputVolume != 1 {
-                 vDSP_vsmul(floatData, 1, &inputVolume, floatData, 1, vDSP_Length(convertedFrames))
-             }
-
-             var trimmedPeak: Float = 0
-             var trimmedHotSamples = 0
-             for i in 0..<convertedFrames {
-                 let mag = abs(floatData[i])
-                 trimmedPeak = max(trimmedPeak, mag)
-                 if mag >= SmartLevelController.nearCeilingThreshold { trimmedHotSamples += 1 }
-             }
-
-             recordInputTelemetry(rawPeak: rawPeak, trimmedPeak: trimmedPeak, rms: rms,
-                                  rawClipSamples: rawClipSamples, trimmedHotSamples: trimmedHotSamples)
+             let telemetry = SmartLevelController.applyInputVolumeAndMeasure(
+                floatData, count: convertedFrames, volume: realtimeInputVolume)
+             recordInputTelemetry(rawPeak: telemetry.rawPeak,
+                                  trimmedPeak: telemetry.trimmedPeak,
+                                  rms: telemetry.trimmedRMS,
+                                  rawClipSamples: telemetry.rawClipSamples,
+                                  trimmedHotSamples: telemetry.trimmedHotSamples)
 
              _ = self.ringBuffer.write(floatData, count: convertedFrames)
         }

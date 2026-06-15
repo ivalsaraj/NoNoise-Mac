@@ -7,7 +7,7 @@ public enum SmartLevelController {
     public static let nearCeilingThreshold: Float = 0.98
     public static let clipThreshold: Float = 0.999
     public static let minInputVolume: Float = 0.25
-    public static let minAutoInputVolume: Float = 0.35
+    public static let minAutoInputVolume: Float = minInputVolume
     public static let minOutputGain: Float = 0.25
     public static let defaultInputVolume: Float = 1.0
     /// Consecutive hot meter ticks before Smart Level acts (~120 ms at 25 Hz).
@@ -30,6 +30,78 @@ public enum SmartLevelController {
             guard let base = buf.baseAddress else { return }
             vDSP_vsmul(base, 1, &scalar, base, 1, vDSP_Length(buf.count))
         }
+    }
+
+    public struct InputTelemetry: Equatable {
+        public let rawPeak: Float
+        public let trimmedPeak: Float
+        public let trimmedRMS: Float
+        public let rawClipSamples: Int
+        public let trimmedHotSamples: Int
+    }
+
+    public struct InputGuardDecision: Equatable {
+        public let inputLevel: Float
+        public let isSourceMicClipping: Bool
+        public let isInputNearCeiling: Bool
+        public let consecutiveTrimmedHotTicks: Int
+        public let suggestedInputVolume: Float?
+    }
+
+    public static func applyInputVolumeAndMeasure(_ samples: UnsafeMutablePointer<Float>,
+                                                  count: Int, volume: Float) -> InputTelemetry {
+        guard count > 0 else {
+            return InputTelemetry(rawPeak: 0, trimmedPeak: 0, trimmedRMS: 0,
+                                  rawClipSamples: 0, trimmedHotSamples: 0)
+        }
+
+        var rawPeak: Float = 0
+        var rawClipSamples = 0
+        for i in 0..<count {
+            let mag = abs(samples[i])
+            rawPeak = max(rawPeak, mag)
+            if mag >= clipThreshold { rawClipSamples += 1 }
+        }
+
+        var scalar = clampInputVolume(volume)
+        if scalar != 1 {
+            vDSP_vsmul(samples, 1, &scalar, samples, 1, vDSP_Length(count))
+        }
+
+        var trimmedPeak: Float = 0
+        var trimmedHotSamples = 0
+        var sum: Float = 0
+        for i in 0..<count {
+            let x = samples[i]
+            let mag = abs(x)
+            trimmedPeak = max(trimmedPeak, mag)
+            sum += x * x
+            if mag >= nearCeilingThreshold { trimmedHotSamples += 1 }
+        }
+
+        return InputTelemetry(rawPeak: rawPeak, trimmedPeak: trimmedPeak,
+                              trimmedRMS: sqrt(sum / Float(count)),
+                              rawClipSamples: rawClipSamples,
+                              trimmedHotSamples: trimmedHotSamples)
+    }
+
+    public static func evaluateInputGuard(telemetry: InputTelemetry,
+                                          currentHotTicks: Int,
+                                          currentInputVolume: Float,
+                                          smartLevelEnabled: Bool) -> InputGuardDecision {
+        let sourceClipping = isSourceMicClipping(rawPeak: telemetry.rawPeak,
+                                                rawClipSampleCount: telemetry.rawClipSamples)
+        let inputNearCeiling = isNearCeiling(telemetry.trimmedPeak)
+        let trimmedWasHot = inputNearCeiling || telemetry.trimmedHotSamples > 0
+        let nextTicks = advanceHotTicks(current: currentHotTicks, wasHot: trimmedWasHot)
+
+        return InputGuardDecision(
+            inputLevel: telemetry.trimmedRMS,
+            isSourceMicClipping: sourceClipping,
+            isInputNearCeiling: inputNearCeiling,
+            consecutiveTrimmedHotTicks: nextTicks,
+            suggestedInputVolume: nextInputVolume(
+                current: currentInputVolume, hotTicks: nextTicks, enabled: smartLevelEnabled))
     }
 
     public static func measurePeak(_ samples: [Float]) -> Float {
