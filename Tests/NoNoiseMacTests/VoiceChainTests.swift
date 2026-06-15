@@ -92,6 +92,10 @@ final class VoiceChainTests: XCTestCase {
         XCTAssertTrue(VoicePreset.tutorial.voiceChain.enabled)
     }
 
+    func testPresetTutorialDoesNotAddCompressorMakeup() {
+        XCTAssertEqual(VoicePreset.tutorial.voiceChain.compMakeupDb, 0)
+    }
+
     func testVoiceChainResetsStateOnReEnable() {
         let chain = VoiceChain()
         chain.configure(VoicePreset.podcast.voiceChain)

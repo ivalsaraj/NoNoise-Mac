@@ -59,10 +59,13 @@ Everything happens **on your device**. Your audio never leaves your Mac.
 |---|---|---|---|
 | **Meeting** | Calls / max noise removal | Full | Off (raw, uncolored) |
 | **Podcast** | Warm, natural voice | Full, natural floor | On (warm) |
-| **Tutorial** | Screen recordings | Full + makeup gain | On (bright & loud) |
+| **Tutorial** | Screen recordings | Full | On (bright & clean) |
 | **Custom** | Your own balance | Your `Strength` + `Reduction Limit` | On (balanced) |
 
 Your selection (and any fine-tuning) is remembered between launches.
+
+Tutorial is tuned to sound clean and present for screen recordings; it does **not** add
+output gain by default. If your mic is quiet, raise **Output Gain** manually.
 
 ### 🎙️ Broadcast Voice
 

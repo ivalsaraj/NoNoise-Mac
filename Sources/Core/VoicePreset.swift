@@ -38,7 +38,7 @@ public enum VoicePreset: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .meeting:  return (1.0, VoicePreset.maxAttenuationDb, 1.0)
         case .podcast:  return (1.0, 24.0, 1.0)
-        case .tutorial: return (1.0, VoicePreset.maxAttenuationDb, 1.2)
+        case .tutorial: return (1.0, VoicePreset.maxAttenuationDb, 1.0)
         case .custom:   return nil
         }
     }
@@ -56,7 +56,7 @@ public enum VoicePreset: String, CaseIterable, Identifiable, Sendable {
         case .tutorial:
             return VoiceChainSettings(enabled: true, highPassHz: 90, lowShelfHz: 180, lowShelfDb: 0,
                                       highShelfHz: 6000, highShelfDb: 3, compThresholdDb: -18, compRatio: 3,
-                                      compAttackMs: 8, compReleaseMs: 120, compMakeupDb: 4, limiterCeilingDb: -0.5)
+                                      compAttackMs: 8, compReleaseMs: 120, compMakeupDb: 0, limiterCeilingDb: -0.5)
         case .custom:
             return VoiceChainSettings(enabled: true, highPassHz: 80, lowShelfHz: 180, lowShelfDb: 1.5,
                                       highShelfHz: 8000, highShelfDb: 2, compThresholdDb: -18, compRatio: 2.5,

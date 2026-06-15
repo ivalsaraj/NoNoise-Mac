@@ -123,8 +123,8 @@ final class NoNoiseMacDSPTests: XCTestCase {
         XCTAssertLessThan(p!.attenuationLimitDb, VoicePreset.maxAttenuationDb)
     }
 
-    func testPresetTutorialAddsMakeupGain() {
-        XCTAssertGreaterThan(VoicePreset.tutorial.parameters!.outputGain, 1.0)
+    func testPresetTutorialUsesUnityOutputGain() {
+        XCTAssertEqual(VoicePreset.tutorial.parameters!.outputGain, 1.0)
     }
 
     func testPresetMaxAttenuationMatchesDSPSentinel() {
