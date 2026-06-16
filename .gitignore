@@ -13,6 +13,7 @@ NoNoiseMac.app/
 NoNoiseMacCLI
 NoNoiseMic.driver/
 *.zip
+*.pkg
 
 # Scratch / local tooling
 test_cm

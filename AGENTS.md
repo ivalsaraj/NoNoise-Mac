@@ -41,6 +41,7 @@ swift test                  # headless unit tests (+ one CoreML file-denoise int
 ./bundle.sh --with-driver   # also builds NoNoiseMic.driver and stages it NEXT TO the app
 ./install-app.sh            # arm64 release build + bundle + install to /Applications
 ./install-app.sh --with-driver # same, also stages NoNoiseMic.driver next to the app
+./build-pkg.sh              # → NoNoiseMac-<ver>.pkg one-click installer (run AFTER ./bundle.sh --with-driver)
 ```
 The virtual mic has its own scripts: `./build-driver.sh`, `sudo ./install-driver.sh`,
 `sudo ./uninstall-driver.sh` (see "NoNoise Mic virtual driver" below). The driver is staged as a
@@ -71,8 +72,9 @@ builds and tests. `.github/workflows/release.yml` automatically publishes the la
 publishes versioned release assets for `v*` tags whose commit is contained in `origin/main` (or
 manual dispatch with such a tag). Do NOT reintroduce a moving `stable` Git tag — `git pull --tags`
 rejects moved local tags and breaks normal sync. Stable assets use fixed names
-(`NoNoiseMac.app.zip`, `NoNoiseMacCLI`, `NoNoiseMic.driver.zip`, `SHA256SUMS`); versioned releases
-use tag-specific filenames.
+(`NoNoiseMac.app.zip`, `NoNoiseMacCLI`, `NoNoiseMic.driver.zip`, `NoNoiseMac.pkg`, `SHA256SUMS`);
+versioned releases use tag-specific filenames. The `.pkg` (built by `build-pkg.sh`) is the one-click
+app+driver installer — unsigned until `PKG_SIGN_IDENTITY` is set in CI.
 
 ## How to cut a versioned release (AI agent instructions)
 

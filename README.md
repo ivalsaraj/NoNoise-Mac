@@ -133,33 +133,43 @@ during a recording). Release to restore AI. ⌃⌥⇧B toggles bypass on/off per
 
 ## 📥 Install
 
-No notarized binary is shipped yet — building from source takes ~2 minutes on Apple Silicon.
+### Easiest — download the installer (no Xcode, no Terminal)
+
+Best for most people. One download, one double-click, done.
+
+1. Grab **`NoNoiseMac.pkg`** from the [Releases page](https://github.com/ivalsaraj/NoNoise-Mac/releases).
+2. Double-click it. It isn't notarized yet, so macOS first calls it an *"unidentified developer"* —
+   open **System Settings → Privacy & Security**, click **Open Anyway**, then run the installer.
+   (One-time approval.)
+3. The installer puts **NoNoise Mac** in **Applications** *and* installs the **NoNoise Mic** virtual
+   microphone in one step. All audio drops for ~3 s while the audio system restarts — that's expected.
+
+Now skip to [Usage](#-usage) and point your apps at **NoNoise Mic**. No `git`, no build tools — those
+aren't preinstalled on macOS, and you don't need them for this path.
+
+> Prefer the pieces separately? The same release also ships `NoNoiseMac.app.zip` (unzip → drag to
+> **Applications**) and `NoNoiseMic.driver.zip`. The `.pkg` just installs both for you.
+
+### Build from source (developers)
 
 **Prerequisites:** macOS 13+, Apple Silicon, and the Swift toolchain (Xcode or
-[Swift.org](https://www.swift.org/install/macos/)).
+[Swift.org](https://www.swift.org/install/macos/)). Note: `git` and the Swift toolchain are **not**
+preinstalled on macOS — this path is for contributors; everyone else should use the installer above.
 
 ```bash
 git clone https://github.com/ivalsaraj/NoNoise-Mac.git
 cd NoNoise-Mac
-./install-app.sh            # optimized arm64 build → /Applications/NoNoiseMac.app
+./install-app.sh --with-driver   # arm64 release build → /Applications, stages the driver
+sudo ./install-driver.sh         # install the NoNoise Mic driver (restarts coreaudiod)
 ```
 
 `install-app.sh` runs `swift build -c release --arch arm64`, bundles/signs the app, and installs it
-to **Applications**. To build the app and stage the virtual mic driver in one pass:
+to **Applications**; `--with-driver` also builds the virtual mic so `install-driver.sh` can install it.
+First app launch: **right-click → Open** (ad-hoc signed); if macOS blocks it, **System Settings →
+Privacy & Security → Open Anyway**. Build the `.pkg` yourself with `./build-pkg.sh`.
 
-```bash
-./install-app.sh --with-driver
-```
-
-Then:
-
-1. First launch: **right-click → Open** (it's ad-hoc signed). If macOS blocks it, go to
-   **System Settings → Privacy & Security → Open Anyway**.
-2. If you used `--with-driver`, install the staged driver with `sudo ./install-driver.sh`.
-
-> Prebuilt releases will land on the [Releases page](https://github.com/ivalsaraj/NoNoise-Mac/releases) — ⭐ the repo to get notified.
-
-Every successful `main` CI run publishes the latest Apple Silicon build with fixed asset names.
+> Every successful `main` CI run publishes the latest Apple Silicon build — app, CLI, driver, and the
+> one-click `.pkg` — to the [Releases page](https://github.com/ivalsaraj/NoNoise-Mac/releases). ⭐ the repo to get notified.
 
 ### Publishing a versioned release
 
@@ -183,8 +193,10 @@ The workflow then builds optimized arm64 binaries and publishes assets (app, CLI
 
 ### NoNoise Mic (virtual microphone) — recommended
 
-Build and install the bundled **NoNoise Mic** driver once, then any app can pick it directly —
-no BlackHole, no system-default juggling.
+The bundled **NoNoise Mic** driver lets any app pick the cleaned audio directly — no BlackHole, no
+system-default juggling. **Installed the `.pkg`? The driver is already set up — skip to step 1.**
+
+Building from source instead? Install the driver once:
 
 ```bash
 ./build-driver.sh          # compile + ad-hoc sign NoNoiseMic.driver

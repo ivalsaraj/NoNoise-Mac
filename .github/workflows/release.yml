@@ -115,11 +115,15 @@ jobs:
             ditto -c -k --keepParent NoNoiseMac.app "release-assets/NoNoiseMac.app.zip"
             cp NoNoiseMacCLI "release-assets/NoNoiseMacCLI"
             ditto -c -k --keepParent NoNoiseMic.driver "release-assets/NoNoiseMic.driver.zip"
+            # One-click installer (app + driver). Unsigned until PKG_SIGN_IDENTITY is set in CI.
+            ./build-pkg.sh --output "release-assets/NoNoiseMac.pkg"
             shasum -a 256 release-assets/* > "release-assets/SHA256SUMS.txt"
           else
             ditto -c -k --keepParent NoNoiseMac.app "release-assets/NoNoiseMac-${TAG}.app.zip"
             ditto -c -k --keepParent NoNoiseMacCLI "release-assets/NoNoiseMacCLI-${TAG}.zip"
             ditto -c -k --keepParent NoNoiseMic.driver "release-assets/NoNoiseMic-driver-${TAG}.zip"
+            # One-click installer (app + driver). Unsigned until PKG_SIGN_IDENTITY is set in CI.
+            ./build-pkg.sh --output "release-assets/NoNoiseMac-${TAG}.pkg"
             shasum -a 256 release-assets/* > "release-assets/SHA256SUMS-${TAG}.txt"
           fi
 

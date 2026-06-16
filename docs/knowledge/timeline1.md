@@ -2,6 +2,30 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-16 — One-click `.pkg` installer (app + driver) + README demo video (Valsaraj)
+- **Why:** release-download users had no way to install the virtual-mic driver — the README told
+  them to run `sudo ./install-driver.sh`, a script that ships only in the cloned repo, not in the
+  release assets. And `git`/Swift aren't preinstalled on macOS, so build-from-source can't be the
+  path for non-technical users.
+- **`build-pkg.sh` (new):** stages the already-built `NoNoiseMac.app` → `/Applications` and
+  `NoNoiseMic.driver` → `/Library/Audio/Plug-Ins/HAL` into a `pkgbuild` root (`ditto` to preserve
+  the Sparkle.framework symlinks), adds a `postinstall` that `killall coreaudiod` (loads the driver
+  without reboot), then `productbuild` wraps it (single-flow UI, arm64-only, macOS 13+ guard) →
+  `NoNoiseMac-<ver>.pkg`. `--ownership recommended` gives the HAL plug-in root:wheel on install; the
+  driver's ad-hoc signature is copied verbatim (no re-sign → coreaudiod still loads it).
+- **Unsigned for now, notarization-ready:** output is unsigned unless `PKG_SIGN_IDENTITY`
+  (a "Developer ID Installer" identity) is set, then `productsign` runs — so adding a Developer ID +
+  notarization later is config, not rework. User chose unsigned ($0, one "Open Anyway" click).
+- **CI:** `release.yml` builds the `.pkg` in "Prepare release assets" for both stable
+  (`NoNoiseMac.pkg`) and versioned (`NoNoiseMac-<tag>.pkg`) releases; it lands in `SHA256SUMS`.
+- **README:** Install section now leads with the `.pkg` (no Xcode/Terminal), keeps build-from-source
+  for contributors, and notes `.pkg` users skip the driver-install commands. Added a `## 🎥 Demo`
+  section embedding a GitHub user-attachments video above "What is NoNoise Mac?".
+- **Verified locally:** `./build-pkg.sh` → `pkgutil --expand-full` confirmed payload installs to
+  Applications + HAL only, postinstall restarts coreaudiod, driver signature intact in the payload.
+- **Files:** `build-pkg.sh`, `.github/workflows/release.yml`, `.gitignore` (`*.pkg`), `README.md`,
+  `AGENTS.md`.
+
 ### 2026-06-15 — Sparkle auto-updater (Valsaraj)
 - Added in-app auto-update via Sparkle 2 (SwiftPM): `UpdaterController` at launch, guarded
   background check in `AppDelegate`, **Check for Updates…** in the popover footer.
