@@ -11,7 +11,7 @@
 	<key>CFBundleName</key>
 	<string>NoNoise Mac</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.3.0</string>
+	<string>1.3.1</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -24,7 +24,7 @@
 		</dict>
 	</array>
 	<key>CFBundleVersion</key>
-	<string>1003000</string>
+	<string>1003001</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSHighResolutionCapable</key>
