@@ -33,7 +33,10 @@ jobs:
       - name: Resolve release target
         id: release_target
         run: |
-          git fetch origin main --tags
+          # --force: CI's checkout already holds the pushed tag, and an un-forced --tags refuses to
+          # re-fetch it ("would clobber existing tag"), which broke the 2nd versioned release. Forcing
+          # also guarantees we get the ANNOTATED tag object so the release notes extract correctly.
+          git fetch --force origin main --tags
 
           if [ "${{ github.event_name }}" = "workflow_run" ]; then
             IS_STABLE=true
@@ -47,7 +50,7 @@ jobs:
               TAG="main-$(git rev-parse --short=12 HEAD)"
             else
               IS_STABLE=false
-              git fetch --tags origin "$TAG"
+              git fetch --force --tags origin "$TAG"
               git checkout "$TAG"
             fi
           else
