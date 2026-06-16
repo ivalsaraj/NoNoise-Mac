@@ -76,7 +76,7 @@ struct GeneralSettingsView: View {
                 Text("NoNoise Mac")
                     .font(.system(.title3, design: .rounded))
                     .fontWeight(.bold)
-                Text("Real-time, on-device noise cancellation")
+                Text("Real-time, on-device AI noise cancellation for macOS")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
