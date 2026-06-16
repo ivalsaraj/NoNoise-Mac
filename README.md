@@ -222,12 +222,29 @@ Installing restarts `coreaudiod`, so **all** audio drops for ~3 s. Then:
    **automatic**: the app routes cleaned audio to the hidden "NoNoise Mic Engine" and the popover
    shows **Output: Automatic → NoNoise Mic** (the Output **picker** only appears for the BlackHole
    fallback below).
-3. **Point your apps at the mic** — in Slack / Zoom / Meet / Discord / OBS, set the
-   **Microphone** to **NoNoise Mic**.
+3. **Point your apps at the mic** — set the **Microphone** to **NoNoise Mic** inside each app (see app-by-app steps below).
 4. **Pick a mode** — Meeting / Podcast / Tutorial, or fine-tune **Suppression Strength** and
    **Reduction Limit** in Settings (this switches the mode to **Custom**).
 5. Noise cancellation is **ON by default**. Toggle it anytime from the menu bar. Remove the
    driver later with `sudo ./uninstall-driver.sh`.
+
+#### App-by-app microphone setup
+
+**Slack**
+1. Click your **profile picture** in the bottom-left sidebar.
+2. Go to **Preferences → Audio & Video**.
+3. Under **Microphone**, select **NoNoise Mic Virtual**.
+
+**Google Meet**
+1. Before or during a call, click the **⋮ More options** menu → **Settings**.
+2. Under **Audio**, set **Microphone** to **NoNoise Mic Virtual**.
+
+**Zoom / Discord / OBS** — each has an **Audio** or **Sound Settings** page; set **Microphone** to **NoNoise Mic Virtual** there.
+
+> ⚠️ **Do NOT change the microphone in macOS System Settings → Sound.**
+> Setting "NoNoise Mic" as your system-default input causes your Mac to route audio into itself —
+> you will hear your own voice echoed back. Always set the microphone **inside the app** (Slack,
+> Meet, Zoom, etc.), not at the system level.
 
 > **Gatekeeper and driver-load are different checks.** The *app* is ad-hoc signed (right-click →
 > Open on first launch). The *driver* is loaded by `coreaudiod`, which **silently ignores** a
