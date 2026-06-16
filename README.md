@@ -21,6 +21,10 @@
   <a href="#-how-it-works"><b>How it works</b></a> ·
   <a href="#-contributing--ai-native"><b>Contribute</b></a>
 
+  <br /><br />
+
+  <a href="#-install"><img alt="How to Install" src="https://img.shields.io/badge/How%20to%20Install-2ea44f?style=for-the-badge&logo=apple&logoColor=white" /></a>
+
 </div>
 
 <br />
