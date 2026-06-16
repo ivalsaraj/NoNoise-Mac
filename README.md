@@ -168,8 +168,8 @@ to **Applications**; `--with-driver` also builds the virtual mic so `install-dri
 First app launch: **right-click → Open** (ad-hoc signed); if macOS blocks it, **System Settings →
 Privacy & Security → Open Anyway**. Build the `.pkg` yourself with `./build-pkg.sh`.
 
-> Every successful `main` CI run publishes the latest Apple Silicon build — app, CLI, driver, and the
-> one-click `.pkg` — to the [Releases page](https://github.com/ivalsaraj/NoNoise-Mac/releases). ⭐ the repo to get notified.
+> Each tagged release (cut with `./release.sh`) publishes the Apple Silicon build — app, CLI, driver,
+> and the one-click `.pkg` — to the [Releases page](https://github.com/ivalsaraj/NoNoise-Mac/releases). ⭐ the repo to get notified.
 
 ### Publishing a versioned release
 

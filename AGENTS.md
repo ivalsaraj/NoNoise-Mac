@@ -67,14 +67,18 @@ Instruments/profiling, allocation checks, or an explicit before/after explanatio
 
 ## CI & releases
 `.github/workflows/ci.yml` runs on pushes to `main` and pull requests targeting `main`; it only
-builds and tests. `.github/workflows/release.yml` automatically publishes the latest successful
-`main` build as GitHub's **Latest** release using an immutable `main-<short-sha>` tag, and also
-publishes versioned release assets for `v*` tags whose commit is contained in `origin/main` (or
-manual dispatch with such a tag). Do NOT reintroduce a moving `stable` Git tag — `git pull --tags`
-rejects moved local tags and breaks normal sync. Stable assets use fixed names
-(`NoNoiseMac.app.zip`, `NoNoiseMacCLI`, `NoNoiseMic.driver.zip`, `NoNoiseMac.pkg`, `SHA256SUMS`);
-versioned releases use tag-specific filenames. The `.pkg` (built by `build-pkg.sh`) is the one-click
-app+driver installer — unsigned until `PKG_SIGN_IDENTITY` is set in CI.
+builds and tests. **Pushes to `main` do NOT publish a release** — releases are versioned-only.
+`.github/workflows/release.yml` publishes a GitHub release ONLY for `v*` tags whose commit is
+contained in `origin/main` (cut via `release.sh`), or a manual `workflow_dispatch`. Assets use
+tag-specific filenames (`NoNoiseMac-<tag>.app.zip`, `NoNoiseMacCLI-<tag>.zip`,
+`NoNoiseMic-driver-<tag>.zip`, `NoNoiseMac-<tag>.pkg`, `SHA256SUMS-<tag>.txt`). The `.pkg` (built by
+`build-pkg.sh`) is the one-click app+driver installer — unsigned until `PKG_SIGN_IDENTITY` is set in
+CI. The Sparkle `appcast` release is bootstrapped once by an admin (CI's token can upload to it but
+can't create its tag — see `docs/knowledge/knowledge1.md`). Do NOT re-add the `workflow_run` rolling
+`main-<short-sha>` "stable" releases: they stole GitHub's **Latest** badge from versioned releases
+and cluttered the Releases page. (A one-off stable build is still available via
+`workflow_dispatch` with tag `stable-latest`.) Also do NOT reintroduce a moving `stable` Git tag —
+`git pull --tags` rejects moved local tags and breaks normal sync.
 
 ## How to cut a versioned release (AI agent instructions)
 
