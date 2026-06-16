@@ -5,6 +5,25 @@ for the must-read failure modes.
 
 ---
 
+### [DECISION] 2026-06-16 — Versioned-only releases; annotated-tag notes need a force-fetch (@ivalsaraj)
+- **Problem**: Every push to `main` auto-published a `main-<short-sha>` "stable" release marked
+  `--latest`, which stole GitHub's **Latest** badge from real versioned releases (v1.3.0) and piled up
+  on the Releases page. Separately, v1.3.0 published with the DEFAULT notes footer instead of its tag
+  body.
+- **Root Cause**: (1) the `workflow_run` trigger fired on every successful CI run on main; stable
+  builds set `--latest`, so the most recent push always won Latest. (2) On a `workflow_dispatch`
+  retry the checked-out tag is peeled/lightweight, so
+  `git for-each-ref --format='%(contents:body)' refs/tags/$TAG` returns the (empty) commit body →
+  the step's fallback notes.
+- **Fix**: Removed the `workflow_run` trigger (+ dead job `if:`) → releases are versioned-only (`v*`
+  tags via `release.sh`, or a manual `stable-latest` dispatch). Force-fetch the annotated tag
+  (`git fetch --force origin "refs/tags/$TAG:refs/tags/$TAG"`) before reading its body. Pruned the
+  rolling releases and pinned v1.3.0 as Latest.
+- **Rule**: Don't auto-publish per-push releases that set `--latest` — reserve **Latest** for
+  versioned releases. Read annotated-tag notes only AFTER force-fetching the tag object; a peeled tag
+  silently yields empty notes.
+- **Files**: .github/workflows/release.yml
+
 ### [GOTCHA] 2026-06-16 — Versioned-release CI: tag-clobber + appcast tag-create 403 (@ivalsaraj)
 - **Problem**: The 2nd versioned release (v1.3.0) failed twice. (1) "Resolve release target" died on
   `git fetch origin main --tags` with "would clobber existing tag" — v1.2.0 was the 1st release so it

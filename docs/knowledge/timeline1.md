@@ -2,6 +2,19 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-16 — Versioned-only releases; fixed v1.3.0 description; pruned rolling builds (Valsaraj)
+- **Decision:** pushes to `main` no longer publish a release. Removed the `workflow_run` trigger from
+  `release.yml` (+ the dead job `if:`). Rolling `main-<sha>` "stable" releases kept stealing GitHub's
+  **Latest** badge from versioned releases and cluttered the Releases page. Releases now come only
+  from `v*` tags (`release.sh`) or a manual `stable-latest` dispatch.
+- **Bug (release notes):** v1.3.0 first published with the DEFAULT footer, not its tag notes — a
+  `workflow_dispatch` retry left the tag peeled, so `git for-each-ref %(contents:body)` read the
+  (empty) commit body and fell back. Fixed by force-fetching the annotated tag object before reading
+  it; repaired v1.3.0's description in place via `gh release edit`.
+- **Cleanup:** deleted 12 rolling `main-<sha>` releases+tags; pinned **v1.3.0** as Latest. Kept
+  `main-773470624139` (1.2.0 / build 2, Sparkle-embedded) ONLY for the in-app updater test.
+- **Files:** `.github/workflows/release.yml`, `README.md`, `AGENTS.md`.
+
 ### 2026-06-16 — Released v1.3.0; fixed the versioned-release CI pipeline (Valsaraj)
 - Cut **v1.3.0** (build 1003000) — first release carrying the Sparkle auto-updater AND the one-click
   `.pkg`. Notes: auto-updates + one-click installer.
