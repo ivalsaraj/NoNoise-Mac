@@ -46,7 +46,7 @@ struct ContentView: View {
             }
             Spacer()
             Button {
-                WindowManager.openSettings(model: audioModel, hotkeyManager: hotkeyManager)
+                WindowManager.openSettings(model: audioModel, hotkeyManager: hotkeyManager, updaterController: updaterController)
             } label: {
                 Image(systemName: "gearshape.fill")
                     .font(.system(size: 14))
@@ -265,7 +265,7 @@ struct ContentView: View {
     private var footer: some View {
         HStack(spacing: 8) {
             Button {
-                WindowManager.openSettings(model: audioModel, hotkeyManager: hotkeyManager)
+                WindowManager.openSettings(model: audioModel, hotkeyManager: hotkeyManager, updaterController: updaterController)
             } label: {
                 Label("Settings", systemImage: "slider.horizontal.3")
             }
@@ -275,14 +275,6 @@ struct ContentView: View {
                 Label("Report", systemImage: "exclamationmark.bubble")
             }
             .controlSize(.small)
-
-            Button {
-                updaterController.checkForUpdates()
-            } label: {
-                Label("Check for Updates…", systemImage: "arrow.down.circle")
-            }
-            .controlSize(.small)
-            .disabled(!updaterController.canCheckForUpdates)
 
             Spacer()
 
@@ -442,9 +434,9 @@ extension View {
 class WindowManager {
     static var settingsWindow: NSWindow?
 
-    static func openSettings(model: AudioModel, hotkeyManager: HotkeyManager) {
+    static func openSettings(model: AudioModel, hotkeyManager: HotkeyManager, updaterController: UpdaterController) {
         if settingsWindow == nil {
-            let view = SettingsView(audioModel: model, hotkeyManager: hotkeyManager)
+            let view = SettingsView(audioModel: model, hotkeyManager: hotkeyManager, updaterController: updaterController)
             let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 520, height: 460),
                                 styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                                 backing: .buffered, defer: false)

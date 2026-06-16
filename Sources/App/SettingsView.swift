@@ -5,10 +5,11 @@ import Core
 struct SettingsView: View {
     @ObservedObject var audioModel: AudioModel
     @ObservedObject var hotkeyManager: HotkeyManager
+    @ObservedObject var updaterController: UpdaterController
 
     var body: some View {
         TabView {
-            GeneralSettingsView(audioModel: audioModel, meterModel: audioModel.meterModel)
+            GeneralSettingsView(audioModel: audioModel, meterModel: audioModel.meterModel, updaterController: updaterController)
                 .tabItem {
                     Label("General", systemImage: "slider.horizontal.3")
                 }
@@ -35,6 +36,7 @@ struct GeneralSettingsView: View {
     // Live diagnostics (clip/ceiling warnings, Smart Level message, integrated LUFS) now live on
     // MeterModel — observe it so the Settings readouts stay live while the popover is closed.
     @ObservedObject var meterModel: MeterModel
+    @ObservedObject var updaterController: UpdaterController
 
     @State private var isShowingSaveSheet = false
     @State private var newProfileName: String = ""
@@ -504,9 +506,16 @@ struct GeneralSettingsView: View {
                 .foregroundColor(.secondary)
             Spacer()
             Link(destination: SupportLinks.reportIssueOrFeature) {
-                Label("Report a feature or issue", systemImage: "exclamationmark.bubble")
+                Label("Report Issue", systemImage: "exclamationmark.bubble")
             }
             .controlSize(.small)
+            Button {
+                updaterController.checkForUpdates()
+            } label: {
+                Label("Check for Updates", systemImage: "arrow.down.circle")
+            }
+            .controlSize(.small)
+            .disabled(!updaterController.canCheckForUpdates)
         }
         .padding(.top, 2)
     }
