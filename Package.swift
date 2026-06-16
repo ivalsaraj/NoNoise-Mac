@@ -13,9 +13,17 @@ let package = Package(
         .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
     ],
     targets: [
+        // Lock-free C11-atomics SPSC float ring for the tap-based Clean Incoming path (bridges the
+        // process-tap IOProc → AVAudioSourceNode, two realtime threads). C target because acquire/
+        // release atomics aren't available pure-Swift on the macOS 14.4 floor; mirrors the driver's
+        // tested nn_ring discipline with zero external dependencies.
+        .target(
+            name: "CTapRing",
+            path: "Sources/CTapRing"
+        ),
         .target(
             name: "Core",
-            dependencies: [],
+            dependencies: ["CTapRing"],
             path: "Sources/Core",
             resources: [
                 .copy("../../Resources")
@@ -46,7 +54,7 @@ let package = Package(
         ),
         .testTarget(
             name: "NoNoiseMacTests",
-            dependencies: ["Core"],
+            dependencies: ["Core", "CTapRing"],
             path: "Tests/NoNoiseMacTests"
         )
     ]

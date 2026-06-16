@@ -167,15 +167,24 @@ struct ContentView: View {
                 Spacer()
                 Toggle("", isOn: $audioModel.incomingCleanupEnabled)
                     .labelsHidden().toggleStyle(.switch)
+                    .disabled(!audioModel.isIncomingCleanupAvailable)
             }
-            if audioModel.incomingCleanupEnabled {
-                Text(audioModel.incomingSourceUID.isEmpty || audioModel.incomingOutputDeviceID == 0
-                     ? "Pick a loopback source and output in Settings."
-                    : "Cleaning the guest you hear.")
+            if let caption = incomingStatusCaption {
+                Text(caption)
                     .font(.caption2).foregroundColor(.secondary)
             }
         }
         .nnCard()
+    }
+
+    /// Status line driven by the never-lying `incomingCleanupStatus` (not the raw persisted flag).
+    private var incomingStatusCaption: String? {
+        switch audioModel.incomingCleanupStatus {
+        case .unavailable: return "Requires macOS 14.4 or later"
+        case .off:         return nil
+        case .cleaning:    return "Cleaning all incoming audio"
+        case .failed:      return "Couldn’t start — allow audio capture in System Settings ▸ Privacy & Security"
+        }
     }
 
     // MARK: - Mouth Noise finishers

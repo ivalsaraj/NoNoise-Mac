@@ -27,6 +27,8 @@
 	<string>1003002</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>NoNoise Mac captures system audio so it can remove background noise from the people you hear on calls, on-device.</string>
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
