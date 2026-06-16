@@ -144,6 +144,13 @@ Best for most people. One download, one double-click, done.
 3. The installer puts **NoNoise Mac** in **Applications** *and* installs the **NoNoise Mic** virtual
    microphone in one step. All audio drops for ~3 s while the audio system restarts — that's expected.
 
+<p align="center">
+  <img src="assets/install-info.jpg" width="820"
+       alt="Approving the unsigned NoNoise Mac installer in System Settings → Privacy & Security (Open Anyway), then the installer running and completing successfully" />
+  <br />
+  <sub><i>First open: macOS blocks the unsigned <code>.pkg</code> — click <b>Open Anyway</b> in <b>Privacy &amp; Security</b>, then run the installer to the success screen.</i></sub>
+</p>
+
 Now skip to [Usage](#-usage) and point your apps at **NoNoise Mic**. No `git`, no build tools — those
 aren't preinstalled on macOS, and you don't need them for this path.
 
