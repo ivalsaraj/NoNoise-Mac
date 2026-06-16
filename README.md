@@ -142,7 +142,7 @@ during a recording). Release to restore AI. ⌃⌥⇧B toggles bypass on/off per
 
 Best for most people. One download, one double-click, done.
 
-1. Grab **`NoNoiseMac.pkg`** from the [Releases page](https://github.com/ivalsaraj/NoNoise-Mac/releases).
+1. Go to the [latest release](https://github.com/ivalsaraj/NoNoise-Mac/releases/latest) and download **`NoNoiseMac-<version>.pkg`** (e.g. `NoNoiseMac-v1.3.2.pkg`).
 2. Double-click it. It isn't notarized yet, so macOS first calls it an *"unidentified developer"* —
    open **System Settings → Privacy & Security**, click **Open Anyway**, then run the installer.
    (One-time approval.)
@@ -153,14 +153,14 @@ Best for most people. One download, one double-click, done.
   <img src="assets/install-info.jpg" width="820"
        alt="Approving the unsigned NoNoise Mac installer in System Settings → Privacy & Security (Open Anyway), then the installer running and completing successfully" />
   <br />
-  <sub><i>First open: macOS blocks the unsigned <code>.pkg</code> — click <b>Open Anyway</b> in <b>Privacy &amp; Security</b>, then run the installer to the success screen.</i></sub>
+  <sub><i>First open: macOS blocks the unsigned <code>.pkg</code> — click <b>Open Anyway</b> in <b>Privacy &amp; Security</b>, then run the installer to the success screen. The file is named <code>NoNoiseMac-&lt;version&gt;.pkg</code> on the releases page.</i></sub>
 </p>
 
 Now skip to [Usage](#-usage) and point your apps at **NoNoise Mic**. No `git`, no build tools — those
 aren't preinstalled on macOS, and you don't need them for this path.
 
-> Prefer the pieces separately? The same release also ships `NoNoiseMac.app.zip` (unzip → drag to
-> **Applications**) and `NoNoiseMic.driver.zip`. The `.pkg` just installs both for you.
+> Prefer the pieces separately? The same release also ships `NoNoiseMac-<version>.app.zip` (unzip → drag to
+> **Applications**) and `NoNoiseMic-driver-<version>.zip`. The `.pkg` just installs both for you.
 
 ### Build from source (developers)
 
