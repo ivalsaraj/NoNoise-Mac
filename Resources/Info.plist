@@ -4,22 +4,14 @@
 <dict>
 	<key>CFBundleExecutable</key>
 	<string>NoNoiseMac</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.ivalsaraj.NoNoiseMac</string>
 	<key>CFBundleName</key>
 	<string>NoNoise Mac</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.2.0</string>
-	<key>CFBundleVersion</key>
-	<string>2</string>
-	<key>CFBundleIconFile</key>
-	<string>AppIcon</string>
-	<key>LSUIElement</key>
-	<true/>
-	<key>NSMicrophoneUsageDescription</key>
-	<string>NoNoise Mac needs access to your microphone to process audio.</string>
-	<key>NSHighResolutionCapable</key>
-	<true/>
+	<string>1.3.0</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -31,12 +23,20 @@
 			</array>
 		</dict>
 	</array>
+	<key>CFBundleVersion</key>
+	<string>1003000</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>NoNoise Mac needs access to your microphone to process audio.</string>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
 	<key>SUFeedURL</key>
 	<string>https://github.com/ivalsaraj/NoNoise-Mac/releases/download/appcast/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>qoQrd6lwz1YFyTo1yutlnpxn//XEJUjugkf1uroGZWQ=</string>
-	<key>SUEnableAutomaticChecks</key>
-	<true/>
 	<key>SUScheduledCheckInterval</key>
 	<integer>86400</integer>
 </dict>
