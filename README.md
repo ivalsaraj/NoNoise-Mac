@@ -72,7 +72,7 @@ Everything happens **on your device**. Your audio never leaves your Mac.
 - **🎛️ One-click modes** — Meeting, Podcast, Tutorial, or Custom, with strength + tone control.
 - **↩️ Safe reset** — restore audio/device settings to defaults from Settings without deleting saved Voice Profiles or custom Hotkeys.
 - **🎙️ Broadcast Voice** — a one-tap clarity lift (Off / Low / Medium / High) that adds studio presence and tames sibilance, so you sound clearer and more present while still sounding like *you*.
-- **🎧 Clean Incoming / Guest** — de-noise the *other* side too. Route a noisy guest or caller through a loopback device and NoNoise Mac cleans **what you hear** in real time with the same on-device AI — no cloud, no subscription.
+- **🎧 Clean Incoming / Guest** — de-noise the *other* side too. NoNoise Mac captures all system audio via a native macOS process tap (no loopback device or BlackHole required) and cleans **what you hear** in real time with the same on-device AI — no cloud, no subscription. Requires macOS 14.4+.
 - **🫦 Mouth Noise** — an optional de-plosive (P-pop / B-thump suppressor) and de-click (lip-smack / mouth-click suppressor) stage (Off / Low / Medium / High). Both are identity at rest — only the artifact is removed, never the voice.
 - **⌨️ Global Hotkeys + Stream Deck** — system-wide hotkeys (user-configurable) for every
   control action (toggle AI, A/B bypass, cycle preset, cycle Broadcast Voice, nudge gain), plus
@@ -151,7 +151,7 @@ during a recording). Release to restore AI. ⌃⌥⇧B toggles bypass on/off per
 
 Best for most people. One download, one double-click, done.
 
-1. Go to the [latest release](https://github.com/ivalsaraj/NoNoise-Mac/releases/latest) and download **`NoNoiseMac-<version>.pkg`** (e.g. `NoNoiseMac-v1.3.2.pkg`).
+1. Go to the [latest release](https://github.com/ivalsaraj/NoNoise-Mac/releases/latest) and download **`NoNoiseMac-<version>.pkg`** (e.g. `NoNoiseMac-v1.4.0.pkg`).
 2. Double-click it. It isn't notarized yet, so macOS first calls it an *"unidentified developer"* —
    open **System Settings → Privacy & Security**, click **Open Anyway**, then run the installer.
    (One-time approval.)
@@ -276,18 +276,18 @@ If you can't install the driver (e.g. a managed Mac), NoNoise Mac also works wit
 NoNoise Mac can also clean the **other** side of a call — a guest on a noisy laptop mic, or a
 caller with a fan running — so **you** hear them de-noised in real time.
 
-macOS has no built-in per-app audio loopback, so you route the call app's **output** into a
-loopback device first, then NoNoise Mac captures and cleans it:
+**Requires macOS 14.4+. No BlackHole or loopback device needed.**
 
-1. Install **[BlackHole 2ch](https://github.com/ExistentialAudio/BlackHole)** (or Loopback).
-2. In your call app (Zoom / Meet / Discord), set the **speaker / output** to **BlackHole 2ch**.
-3. In NoNoise Mac **Settings → Clean Incoming / Guest**, enable it, pick **BlackHole** as
-   *Incoming from* and your real **speakers / headphones** as *Hear on*.
+NoNoise Mac uses a native macOS **process tap** to capture all system audio except its own output,
+runs a second on-device AI stream, and re-plays the cleaned result to your default output automatically.
 
-NoNoise Mac re-plays the **cleaned** guest audio to your chosen output, so you still hear the
-call — just de-noised. It runs a **second** on-device AI stream and is **off by default** (that
-stream only runs while enabled). For raw monitoring alongside the cleaned feed, point the call app
-at a macOS **Multi-Output Device** that includes both the loopback and your speakers.
+1. Open **Settings → Clean Incoming / Guest** and enable the toggle.
+2. macOS will prompt for audio capture permission — grant it. (One-time.)
+3. Done. NoNoise Mac cleans what you hear on any call, podcast, or stream, and follows your
+   default output device automatically if you switch headphones or speakers mid-call.
+
+The feature is **off by default** (the second AI stream only runs while enabled). On macOS 13
+or earlier the toggle is hidden — use the CLI dual-pipeline approach below instead.
 
 ## Updating
 
