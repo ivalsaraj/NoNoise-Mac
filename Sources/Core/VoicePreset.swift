@@ -38,8 +38,17 @@ public enum VoicePreset: String, CaseIterable, Identifiable, Codable, Sendable {
         switch self {
         case .meeting:  return (1.0, VoicePreset.maxAttenuationDb, 1.0)
         case .podcast:  return (1.0, 24.0, 1.0)
-        case .tutorial: return (1.0, VoicePreset.maxAttenuationDb, 1.0)
+        case .tutorial: return (1.0, 70.0, 1.0)
         case .custom:   return nil
+        }
+    }
+
+    /// App-level input volume applied when this preset is selected.
+    /// `nil` means "leave the user's current input volume unchanged".
+    public var defaultInputVolume: Float? {
+        switch self {
+        case .tutorial: return 0.70
+        default:        return nil
         }
     }
 

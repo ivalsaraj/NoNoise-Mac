@@ -2,6 +2,15 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-16 — Tutorial preset tuned: reduction limit 70 dB + input volume 70% (@Valsaraj)
+- **What:** Tutorial preset `attenuationLimitDb` changed from `maxAttenuationDb` (100, unlimited) to
+  `70.0` dB. Added `VoicePreset.defaultInputVolume: Float?` — returns `0.70` for `.tutorial`, `nil`
+  for all other presets. `applyPreset` now applies `defaultInputVolume` when non-nil, going through
+  `SmartLevelController.clampInputVolume` for bounds safety.
+- **Why:** User-validated settings for screen-recording / tutorial use: 70 dB reduction limit prevents
+  over-suppression of ambient detail; 70% input volume avoids clip-to-DSP before noise reduction.
+- **Files:** `Sources/Core/VoicePreset.swift`, `Sources/Core/AudioModel.swift`
+
 ### 2026-06-16 — Clean Incoming rewritten to a Core Audio process tap (no BlackHole) (Valsaraj)
 - **What:** replaced the `AVCaptureSession`-of-a-loopback-device "Clean Incoming / Guest" path with a
   Core Audio **process tap** (`CATapDescription(stereoGlobalTapButExcludeProcesses:)` + private
