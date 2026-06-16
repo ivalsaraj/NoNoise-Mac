@@ -26,6 +26,19 @@
 
   <a href="#-install"><img alt="How to Install" src="https://img.shields.io/badge/How%20to%20Install-2ea44f?style=for-the-badge&logo=apple&logoColor=white" /></a>
 
+  <br /><br />
+
+  <sub>Works with</sub><br />
+  <img src="https://cdn.simpleicons.org/slack/4A154B" width="22" height="22" alt="Slack" title="Slack" />
+  &nbsp;
+  <img src="https://cdn.simpleicons.org/googlemeet/00897B" width="22" height="22" alt="Google Meet" title="Google Meet" />
+  &nbsp;
+  <img src="https://cdn.simpleicons.org/zoom/2D8CFF" width="22" height="22" alt="Zoom" title="Zoom" />
+  &nbsp;
+  <img src="https://cdn.simpleicons.org/discord/5865F2" width="22" height="22" alt="Discord" title="Discord" />
+  &nbsp;
+  <img src="https://cdn.simpleicons.org/obsstudio/302E31" width="22" height="22" alt="OBS Studio" title="OBS Studio" />
+
 </div>
 
 <br />
@@ -230,16 +243,16 @@ Installing restarts `coreaudiod`, so **all** audio drops for ~3 s. Then:
 
 #### App-by-app microphone setup
 
-**Slack**
+<img src="https://cdn.simpleicons.org/slack/4A154B" width="16" height="16" alt="Slack" /> **Slack**
 1. Click your **profile picture** in the bottom-left sidebar.
 2. Go to **Preferences → Audio & Video**.
 3. Under **Microphone**, select **NoNoise Mic Virtual**.
 
-**Google Meet**
+<img src="https://cdn.simpleicons.org/googlemeet/00897B" width="16" height="16" alt="Google Meet" /> **Google Meet**
 1. Before or during a call, click the **⋮ More options** menu → **Settings**.
 2. Under **Audio**, set **Microphone** to **NoNoise Mic Virtual**.
 
-**Zoom / Discord / OBS** — each has an **Audio** or **Sound Settings** page; set **Microphone** to **NoNoise Mic Virtual** there.
+<img src="https://cdn.simpleicons.org/zoom/2D8CFF" width="16" height="16" alt="Zoom" /> **Zoom** / <img src="https://cdn.simpleicons.org/discord/5865F2" width="16" height="16" alt="Discord" /> **Discord** / <img src="https://cdn.simpleicons.org/obsstudio/302E31" width="16" height="16" alt="OBS" /> **OBS** — each has an **Audio** or **Sound Settings** page; set **Microphone** to **NoNoise Mic Virtual** there.
 
 > ⚠️ **Do NOT change the microphone in macOS System Settings → Sound.**
 > Setting "NoNoise Mic" as your system-default input causes your Mac to route audio into itself —
