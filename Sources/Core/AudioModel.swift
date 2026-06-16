@@ -41,8 +41,11 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     /// which doesn't pin the mic just because the app is open.
     @Published public var virtualMicInUse: Bool = false
 
-    // Incoming / guest cleanup (clean the OTHER side). Off by default — the second CoreML
-    // stream has real ANE cost, so the engine is created only while enabled (see plan perf note).
+    // Incoming / guest cleanup (clean the OTHER side) — a SINGLE toggle. Captures all system audio
+    // except NoNoise via a Core Audio process tap (macOS 14.4+), cleans it (DFN only), and plays to
+    // the current default output (auto-following device changes). No BlackHole, no manual routing.
+    // Off by default — the second CoreML stream has real ANE cost, so the engine is created only
+    // while enabled (see plan perf note).
     @Published public var incomingCleanupEnabled: Bool = false {
         didSet {
             guard !isApplyingPreset else { return }
@@ -50,26 +53,16 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
             persistIncomingSettings()
         }
     }
-    /// HAL UID of the loopback/aggregate INPUT carrying the call app's output.
-    @Published public var incomingSourceUID: String = "" {
-        didSet {
-            guard !isApplyingPreset, incomingSourceUID != oldValue else { return }
-            applyIncomingCleanup()
-            persistIncomingSettings()
-        }
+    /// Effective, never-lying state for the UI: `start()` can fail (TCC denied, own-process
+    /// unresolved, tap/aggregate creation failed) and the owner then retains NO engine. The toggle
+    /// binds to THIS (not the raw persisted flag) so it reflects what's actually happening.
+    @Published public private(set) var incomingCleanupStatus: IncomingCleanupStatus = .off
+
+    /// Whether the process-tap path is usable on this OS (macOS 14.4+ is the product floor). The UI
+    /// disables the toggle and shows a "requires macOS 14.4" caption when false.
+    public var isIncomingCleanupAvailable: Bool {
+        if #available(macOS 14.4, *) { return true } else { return false }
     }
-    /// AudioObjectID of the monitor output (real speakers/headphones) the user hears the guest on.
-    @Published public var incomingOutputDeviceID: AudioObjectID = 0 {
-        didSet {
-            guard !isApplyingPreset, incomingOutputDeviceID != oldValue else { return }
-            applyIncomingCleanup()
-            persistIncomingSettings()
-        }
-    }
-    /// Input devices offered as the incoming source (loopback/aggregate; our devices + hidden excluded).
-    @Published public var incomingSourceDevices: [DeviceStruct] = []
-    /// Real outputs offered to monitor the cleaned guest (loopback sinks + our engine excluded).
-    @Published public var monitorOutputDevices: [DeviceStruct] = []
 
     // On-demand capture: when the virtual mic is installed we capture the real mic ONLY while a
     // consumer app is using "NoNoise Mic" (observed via kAudioDevicePropertyDeviceIsRunningSomewhere).
@@ -269,8 +262,6 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         static let inputVolume = SettingsResetPolicy.inputVolumeKey
         static let smartLevel = SettingsResetPolicy.smartLevelKey
         static let incomingEnabled = SettingsResetPolicy.incomingEnabledKey
-        static let incomingSourceUID = SettingsResetPolicy.incomingSourceUIDKey
-        static let incomingOutputUID = SettingsResetPolicy.incomingOutputUIDKey
         static let profiles = SettingsResetPolicy.profilesKey   // Voice Profiles (JSON array)
         static let loudnessNorm = SettingsResetPolicy.loudnessNormKey
         static let loudnessTarget = SettingsResetPolicy.loudnessTargetKey
@@ -303,13 +294,11 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     // OPTIONAL — created only while the feature is enabled (DeepFilterNetDSP.init allocates
     // MLMultiArrays + async-loads the model; a stored non-optional instance would pay that at
     // launch and break zero-cost-when-off). Released to nil on disable.
-    private var incomingEngine: IncomingCleanupEngine?
-
-    // UID lookups: capture is by UID (input scan); monitor persistence is by UID (output scan).
-    // Kept SEPARATE so persistence resolves the monitor output from the correct device set
-    // (AudioObjectIDs are not stable across reboots, so we store + restore by UID).
-    private var incomingSourceUIDByID: [AudioObjectID: String] = [:]
-    private var monitorOutputUIDByID: [AudioObjectID: String] = [:]
+    // OPTIONAL — created only while the feature is enabled (the tap engine allocates MLMultiArrays +
+    // async-loads the model; a resident instance would break zero-cost-when-off). Stored as
+    // `AnyObject?` so AudioModel itself needn't be `@available(macOS 14.4,*)`: `IncomingCleanupEngine`
+    // is gated and only ever constructed/cast inside `#available` blocks (see `applyIncomingCleanup`).
+    private var incomingEngine: AnyObject?
 
     public override init() {
         super.init()
@@ -364,7 +353,6 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         checkPermissions()
         fetchInputDevices()
         fetchOutputDevices()
-        fetchIncomingDevices()   // HAL input-scope scan surfaces loopback sources (BlackHole/Loopback)
         // Resolve the virtual mic up front so the first capture config is correctly gated: in
         // on-demand mode we must NOT start the real-mic capture until an app uses "NoNoise Mic".
         micDeviceID = deviceID(forUID: VirtualMicRouting.visibleDeviceUID)
@@ -562,8 +550,6 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         inputVolumeValue = SmartLevelController.defaultInputVolume
         smartLevelEnabled = false
         incomingCleanupEnabled = false
-        incomingSourceUID = ""
-        incomingOutputDeviceID = 0
         loudnessNormEnabled = false
         loudnessTargetLUFS = -14
         isApplyingPreset = false
@@ -596,6 +582,7 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
             inputVolumeValue = SmartLevelController.defaultInputVolume
             applyPreset(.meeting)
             applyVoiceChain()
+            applyIncomingCleanup()   // feature off on first launch; sets status (.off or .unavailable)
             return
         }
         // Load stored knob values (used as-is for .custom; overwritten below for
@@ -616,13 +603,10 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         loudnessNormEnabled = d.object(forKey: PrefKey.loudnessNorm) as? Bool ?? false
         loudnessTargetLUFS  = d.object(forKey: PrefKey.loudnessTarget) != nil
             ? d.float(forKey: PrefKey.loudnessTarget) : -14
-        // Incoming / guest cleanup (off by default; resolve persisted UIDs to live IDs). Restored
-        // inside the isApplyingPreset guard so the didSets don't re-persist/reconfigure mid-load.
+        // Incoming / guest cleanup (off by default). Restored inside the isApplyingPreset guard so
+        // the didSet doesn't re-persist/reconfigure mid-load; the explicit applyIncomingCleanup()
+        // below starts it if it was persisted enabled (and resolves the effective status).
         incomingCleanupEnabled = d.bool(forKey: PrefKey.incomingEnabled)
-        incomingSourceUID = d.string(forKey: PrefKey.incomingSourceUID) ?? ""
-        if let outUID = d.string(forKey: PrefKey.incomingOutputUID), !outUID.isEmpty {
-            incomingOutputDeviceID = deviceID(forUID: outUID)   // translate monitor UID → live ID
-        }
         selectedPreset = preset
         isApplyingPreset = false
         if let p = preset.parameters {  // non-custom: preset defines the values
@@ -640,58 +624,52 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
 
     // MARK: - Incoming / guest cleanup lifecycle
 
-    /// Create-or-tear-down the incoming engine to match the current selections. Off by default —
-    /// the engine object (and thus the second DeepFilterNetDSP's allocations + model load) is
-    /// constructed ONLY when enabled with a valid source, and released to nil otherwise, so a
-    /// disabled feature holds zero ANE/CPU/memory.
+    /// Create-or-tear-down the tap-based incoming engine to match `incomingCleanupEnabled`, and
+    /// publish the effective `incomingCleanupStatus` for the UI. Off by default — the engine object
+    /// (and thus the second DeepFilterNetDSP's allocations + model load) is constructed ONLY when
+    /// enabled on a supported OS, and released to nil otherwise, so a disabled feature holds zero
+    /// ANE/CPU/memory. Retains the engine ONLY if `start()` returns true (truthful contract): a
+    /// failed start (TCC denied, own-process unresolved, tap/aggregate creation failed) leaves no
+    /// resident pipeline and surfaces `.failed` so granting permission + re-toggling retries.
     private func applyIncomingCleanup() {
-        // Tear down unless the feature is FULLY and VALIDLY configured. We require BOTH a real
-        // loopback source AND a chosen real monitor output, each re-validated against the canonical
-        // predicates (a persisted device may have changed identity/role since it was saved).
-        // Requiring a chosen REAL monitor is load-bearing: with no monitor, playback would fall to
-        // the system DEFAULT output — and if that default is the very loopback being captured (the
-        // setup points the call app's speaker at it), that is a FEEDBACK loop. "No valid monitor"
-        // therefore means "do not run", never "fall back to default".
-        guard incomingCleanupEnabled,
-              !incomingSourceUID.isEmpty,
-              incomingOutputDeviceID != 0,
-              let sourceInfo = deviceInfo(for: deviceID(forUID: incomingSourceUID)),
-              VirtualMicRouting.isSelectableIncomingSource(sourceInfo),
-              let monitorInfo = deviceInfo(for: incomingOutputDeviceID),
-              VirtualMicRouting.isSelectableMonitorOutput(monitorInfo) else {
-            incomingEngine?.stop()
-            incomingEngine = nil          // release allocations + CoreML model
+        guard isIncomingCleanupAvailable else {
+            // OS < 14.4: never construct the tap engine; the toggle is disabled and shows "unavailable".
+            incomingCleanupStatus = .unavailable
             return
         }
-        // Lazily construct on first enable (DeepFilterNetDSP.init allocates + async-loads here).
-        // Retain the engine ONLY if it actually starts: a failed capture attach must not leave the
-        // second CoreML pipeline (model + buffers) resident — that would break zero-cost-when-off.
-        let engine = incomingEngine ?? IncomingCleanupEngine()
-        if engine.start(sourceDeviceUID: incomingSourceUID, monitorDeviceID: incomingOutputDeviceID) {
-            incomingEngine = engine
-        } else {
-            engine.stop()
-            incomingEngine = nil
+        if #available(macOS 14.4, *) {
+            if incomingCleanupEnabled {
+                // Already genuinely running — don't rebuild the tap on a redundant apply.
+                if incomingCleanupStatus == .cleaning, incomingEngine != nil { return }
+                let engine = IncomingCleanupEngine()
+                // Runtime self-teardown (e.g. default output vanished, re-pin/rebuild failed): release
+                // the engine and drop to .failed so the toggle never shows a lying ".cleaning" over a
+                // dead pipeline. Delivered on main; weak captures + identity check ignore a late
+                // callback from an engine we've already replaced or disabled.
+                engine.onRuntimeFailure = { [weak self, weak engine] in
+                    guard let self = self, let engine = engine,
+                          self.incomingEngine === engine else { return }
+                    self.incomingEngine = nil
+                    self.incomingCleanupStatus = .failed
+                }
+                if engine.start() {
+                    incomingEngine = engine
+                    incomingCleanupStatus = .cleaning
+                } else {
+                    engine.stop()
+                    incomingEngine = nil
+                    incomingCleanupStatus = .failed   // toggle stays on; retry on re-toggle after TCC grant
+                }
+            } else {
+                (incomingEngine as? IncomingCleanupEngine)?.stop()
+                incomingEngine = nil
+                incomingCleanupStatus = .off
+            }
         }
     }
 
     private func persistIncomingSettings() {
-        let d = UserDefaults.standard
-        d.set(incomingCleanupEnabled, forKey: PrefKey.incomingEnabled)
-        d.set(incomingSourceUID, forKey: PrefKey.incomingSourceUID)
-        // Persist the MONITOR output by UID, resolved from the MONITOR-output map (the OUTPUT scan)
-        // — NOT the input-source map. AudioObjectIDs are not stable across reboots, so we store the
-        // UID; fall back to a live HAL translate if the map is momentarily stale.
-        let monitorUID = monitorOutputUIDByID[incomingOutputDeviceID]
-            ?? uidForDevice(incomingOutputDeviceID)
-        d.set(monitorUID, forKey: PrefKey.incomingOutputUID)
-    }
-
-    /// Reverse of deviceID(forUID:): read a live device's REAL UID by AudioObjectID. Used as a
-    /// fallback when the cached monitorOutputUIDByID map hasn't been rebuilt yet.
-    private func uidForDevice(_ id: AudioObjectID) -> String {
-        guard id != 0, let info = deviceInfo(for: id) else { return "" }
-        return info.uid
+        UserDefaults.standard.set(incomingCleanupEnabled, forKey: PrefKey.incomingEnabled)
     }
 
     /// Resolve a device UID to its AudioObjectID via the HAL. Works for INPUT-only devices too
@@ -710,9 +688,8 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         return translated
     }
 
-    /// Shared HAL reader: name + REAL uid + hidden flag + input/output capability + transport type.
-    /// Extracted so fetchOutputDevices and fetchIncomingDevices read identical metadata (DRY) and
-    /// so the new DeviceInfo fields are populated everywhere the predicate runs.
+    /// Shared HAL reader: name + REAL uid + hidden flag + output capability. Used by
+    /// `fetchOutputDevices` (route-target enumeration) and the engine-route translate.
     private func deviceInfo(for id: AudioObjectID) -> VirtualMicRouting.DeviceInfo? {
         // Name.
         var nameSize = UInt32(MemoryLayout<CFString?>.size)
@@ -743,12 +720,11 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
             AudioObjectGetPropertyData(id, &hiddenAddr, 0, nil, &hiddenSize, &hidden)
         }
 
-        // Input / output capability — SUM the AudioBufferList channel counts; do NOT trust the
-        // property data size alone. kAudioDevicePropertyStreamConfiguration returns a non-empty
-        // AudioBufferList header even when a scope has ZERO streams (mNumberBuffers == 0), so a
-        // `size > 0` check reports phantom channels and would misclassify devices (e.g. an
-        // input-only mic offered as a monitor output, or an output-only device as an incoming
-        // source). Only a positive mNumberChannels sum proves the scope actually has channels.
+        // Output capability — SUM the AudioBufferList channel counts; do NOT trust the property data
+        // size alone. kAudioDevicePropertyStreamConfiguration returns a non-empty AudioBufferList
+        // header even when a scope has ZERO streams (mNumberBuffers == 0), so a `size > 0` check
+        // reports phantom channels and would misclassify devices (e.g. an input-only mic offered as
+        // an output). Only a positive mNumberChannels sum proves the scope actually has channels.
         func channelCount(scope: AudioObjectPropertyScope) -> Int {
             var cfgAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration,
                                                      mScope: scope, mElement: 0)
@@ -764,55 +740,10 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
             for buf in listPtr { channels += Int(buf.mNumberChannels) }
             return channels
         }
-        let hasInput = channelCount(scope: kAudioObjectPropertyScopeInput) > 0
         let hasOutput = channelCount(scope: kAudioObjectPropertyScopeOutput) > 0
 
-        // Transport type (FourCharCode → UInt32). Absent → 0 (Unknown).
-        var transport: UInt32 = 0
-        var tSize = UInt32(MemoryLayout<UInt32>.size)
-        var tAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType,
-                                               mScope: kAudioObjectPropertyScopeGlobal,
-                                               mElement: kAudioObjectPropertyElementMain)
-        if AudioObjectHasProperty(id, &tAddr) {
-            AudioObjectGetPropertyData(id, &tAddr, 0, nil, &tSize, &transport)
-        }
-
         return VirtualMicRouting.DeviceInfo(uid: realUID, name: name, isHidden: hidden != 0,
-                                            hasOutput: hasOutput, hasInput: hasInput,
-                                            transportType: transport)
-    }
-
-    /// Enumerate INPUT-capable devices via the HAL (input scope). Unlike
-    /// AVCaptureDevice.DiscoverySession (used for the mic), this surfaces loopback/aggregate
-    /// devices like BlackHole — exactly the incoming-source candidates.
-    func fetchIncomingDevices() {
-        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices,
-                                              mScope: kAudioObjectPropertyScopeGlobal,
-                                              mElement: kAudioObjectPropertyElementMain)
-        var dataSize: UInt32 = 0
-        AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &dataSize)
-        let count = Int(dataSize) / MemoryLayout<AudioObjectID>.size
-        var ids = [AudioObjectID](repeating: 0, count: count)
-        AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &dataSize, &ids)
-
-        var sources: [DeviceStruct] = []
-        var uidByID: [AudioObjectID: String] = [:]
-        for id in ids {
-            guard let info = deviceInfo(for: id) else { continue }
-            guard VirtualMicRouting.isSelectableIncomingSource(info) else { continue }
-            sources.append(DeviceStruct(id: id, name: info.name))
-            uidByID[id] = info.uid
-        }
-        DispatchQueue.main.async {
-            self.incomingSourceDevices = sources
-            self.incomingSourceUIDByID = uidByID
-        }
-    }
-
-    /// UID for a picked incoming-source `DeviceStruct.id` (capture is by UID, not AudioObjectID).
-    /// Lets the Settings picker tag rows with the UID that `incomingSourceUID` binds to.
-    public func uid(forIncomingSourceID id: AudioObjectID) -> String {
-        incomingSourceUIDByID[id] ?? ""
+                                            hasOutput: hasOutput)
     }
 
     func fetchOutputDevices() {
@@ -833,26 +764,16 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         // here — it's detected by UID translate below.
         var allDevs: [VirtualMicRouting.DeviceInfo] = []
         var uidToID: [String: AudioObjectID] = [:]
-        // Monitor outputs for the incoming/guest picker — REAL outputs only (loopback sinks,
-        // aggregates, virtual, hidden, and our engine excluded by isSelectableMonitorOutput). Built
-        // from the SAME output-capable set but kept SEPARATE from outputDevices (the outgoing picker
-        // is filtered with isSelectableOutput and would wrongly include BlackHole as a monitor target).
-        var monitors: [DeviceStruct] = []
-        var monitorUID: [AudioObjectID: String] = [:]
 
         for id in deviceIDs {
-            // Shared HAL read (name/uid/hidden/input+output capability/transport). `hasOutput` now
-            // comes from the reader, so the old inline `if size > 0` output guard becomes `info.hasOutput`.
+            // Shared HAL read (name/uid/hidden/output capability). `hasOutput` comes from the reader,
+            // so the old inline `if size > 0` output guard becomes `info.hasOutput`.
             guard let info = deviceInfo(for: id) else { continue }
             if info.hasOutput {
                 allDevs.append(info)
                 uidToID[info.uid] = id
                 if VirtualMicRouting.isSelectableOutput(info) {   // exclude hidden + our engine from the user's picker
                     newDevs.append(DeviceStruct(id: id, name: info.name))
-                }
-                if VirtualMicRouting.isSelectableMonitorOutput(info) {
-                    monitors.append(DeviceStruct(id: id, name: info.name))
-                    monitorUID[id] = info.uid
                 }
             }
         }
@@ -873,8 +794,6 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         let routeUID = VirtualMicRouting.preferredOutputUID(from: allDevs)   // engine (by UID), else BlackHole, else nil
         DispatchQueue.main.async {
             self.outputDevices = newDevs
-            self.monitorOutputDevices = monitors
-            self.monitorOutputUIDByID = monitorUID
             // The visible "NoNoise Mic" is INPUT-only, so it is NOT in the output-scoped allDevs.
             // Detect install by translating the visible UID directly (translate resolves input-only devices too).
             self.driverInstalled = self.deviceID(forUID: VirtualMicRouting.visibleDeviceUID) != 0
@@ -1065,13 +984,11 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
     private func refreshDevicesAfterHardwareChange() {
         fetchInputDevices()
         fetchOutputDevices()
-        fetchIncomingDevices()   // refresh loopback sources when BlackHole/Loopback is added/removed
         resolveVirtualMicLifecycle()
-        // Re-validate the incoming engine against the new device set: tear it down if the selected
-        // source/monitor vanished or changed role, (re)start it if a valid selection reappeared.
-        // Reads the HAL directly (deviceInfo/deviceID), so it's correct even before the fetch*
-        // results publish on the next runloop.
-        applyIncomingCleanup()
+        // The incoming tap engine is NOT re-applied here: it captures all-system-minus-NoNoise (so
+        // device add/remove doesn't change its source) and follows the default output via its own
+        // HAL listener + AVAudioEngineConfigurationChange observer. Re-applying would needlessly
+        // rebuild the tap on every hardware change.
     }
 
     private func startCapture() {

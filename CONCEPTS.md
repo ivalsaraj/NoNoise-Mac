@@ -19,15 +19,22 @@ docs, and reviews.
   math only. See `AGENTS.md` → Real-time audio rules.
 
 ## Incoming / guest cleanup
-- **Incoming / guest cleanup** — the mirror of mic cleaning: capture the call app's
-  output from a loopback/aggregate **INPUT** device, clean it with a SECOND DeepFilterNet
-  stream (`IncomingCleanupEngine`), and play it to the user's speakers (Phase 1) and/or a
-  second virtual sink for recording (Phase 2). Independent of the outgoing mic — its own
-  capture session, engine, ring buffer, and DSP state.
-- **Loopback source** — a device (BlackHole / Loopback / aggregate) the user points the call
-  app's speaker at, so its audio becomes a capturable **INPUT**. macOS has no built-in app
-  loopback, so this routing step is required.
-- **Monitor output** — the real speakers / headphones the cleaned guest audio is played to.
+- **Incoming / guest cleanup** — the mirror of mic cleaning: de-noise the audio the user
+  *hears* (noisy guests/callers). Captures **all system audio except NoNoise** via a Core Audio
+  **process tap** (macOS 14.4+), cleans it with a SECOND DeepFilterNet stream
+  (`IncomingCleanupEngine`, DFN only), and re-renders it to the **current default output**.
+  Independent of the outgoing mic — its own tap, engine, ring, and DSP state. **A single
+  toggle**: no loopback device, no manual routing.
+- **Process tap** — `CATapDescription(stereoGlobalTapButExcludeProcesses:)` + a private
+  aggregate device + an `AudioDeviceIOProcID`. The tap excludes NoNoise's own process (so it
+  never re-captures its own cleaned playback) and **mutes** the tapped originals, so the user
+  hears only the cleaned re-render.
+- **Tap ring** — `TapAudioRing` / `CTapRing` (`tap_ring`): a lock-free C11-atomics SPSC float
+  FIFO bridging the tap IOProc (producer) and the `AVAudioSourceNode` render block (consumer),
+  both realtime threads. Mirrors the driver's tested `nn_ring` acquire/release discipline.
+- **Incoming cleanup status** — the never-lying UI state (`IncomingCleanupStatus`:
+  `unavailable` / `off` / `cleaning` / `failed`) the toggle binds to, since `start()` can fail
+  (TCC denied, own-process unresolved, tap creation failed) and leave no resident engine.
 
 ## DSP / DeepFilterNet
 - **DeepFilterNet3 (DFN)** — the noise-suppression neural model (stock), run via CoreML on

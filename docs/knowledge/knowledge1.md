@@ -5,6 +5,29 @@ for the must-read failure modes.
 
 ---
 
+### [DECISION] 2026-06-16 — Clean Incoming rewritten to a Core Audio process tap; the 2026-06-15 BlackHole entries are SUPERSEDED (@Valsaraj)
+- **Problem**: The 2026-06-15 incoming-cleanup design (entries below) used an `AVCaptureSession` on a
+  user-chosen **loopback/BlackHole** source plus a user-chosen **monitor output**, with source/monitor
+  pickers and a feedback guard. It required installing BlackHole and manually routing the call app's
+  speaker — fragile setup, and a feedback path if the monitor was the captured loopback.
+- **Decision**: Replace it with a **Core Audio process tap** (`AudioHardwareCreateProcessTap` +
+  private aggregate + `AudioDeviceIOProcID`, macOS 14.4+) that captures all system audio **except
+  NoNoise's own process** (global-exclude tap, originals **muted**), cleans it through the per-instance
+  `DeepFilterNetDSP`, and re-renders to the **current default output** (auto-following device changes).
+  No BlackHole, no source/monitor pickers — a **single toggle + status line**. The IOProc (producer)
+  and `AVAudioSourceNode` (consumer) are bridged by a lock-free C11-atomics SPSC ring (`CTapRing` /
+  `TapAudioRing`). Truthful lifecycle preserved (retain only a genuinely running pipeline); runtime
+  self-teardown now notifies the owner so the toggle drops `.cleaning → .failed` instead of lying.
+- **Rule**: The entries dated **2026-06-15** below about incoming cleanup (BlackHole capture session,
+  `isSelectableIncomingSource` / `isSelectableMonitorOutput`, source/monitor pickers, `mv.incomingSource*`
+  / `mv.incomingOutput*`, the "chosen REAL monitor" feedback guard, `AVCaptureDevice(uniqueID:)` capture)
+  are **HISTORY** — they describe the removed design. The current design is the process tap above; see
+  AGENTS.md "Incoming / guest cleanup" and `docs/superpowers/specs/2026-06-16-tap-based-clean-incoming-design.md`.
+- **Files**: `Sources/Core/AudioProcessing/IncomingCleanupEngine.swift` (full rewrite),
+  `Sources/CTapRing/*`, `Sources/Core/AudioProcessing/TapAudioRing.swift`,
+  `Sources/Core/AudioProcessing/IncomingTapLogic.swift`, `Sources/Core/AudioModel.swift`,
+  `Sources/Core/AudioProcessing/VirtualMicRouting.swift`, `Resources/Info.plist`.
+
 ### [DECISION] 2026-06-16 — Versioned-only releases; annotated-tag notes need a force-fetch (@ivalsaraj)
 - **Problem**: Every push to `main` auto-published a `main-<short-sha>` "stable" release marked
   `--latest`, which stole GitHub's **Latest** badge from real versioned releases (v1.3.0) and piled up

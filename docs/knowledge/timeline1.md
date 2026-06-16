@@ -2,6 +2,45 @@
 
 Chronological log of notable changes. Newest on top.
 
+### 2026-06-16 — Clean Incoming rewritten to a Core Audio process tap (no BlackHole) (Valsaraj)
+- **What:** replaced the `AVCaptureSession`-of-a-loopback-device "Clean Incoming / Guest" path with a
+  Core Audio **process tap** (`CATapDescription(stereoGlobalTapButExcludeProcesses:)` + private
+  aggregate + `AudioDeviceIOProcID`) that captures **all system audio except NoNoise**, cleans it
+  (DFN only), and re-renders to the **current default output** (auto-following device changes; tapped
+  originals muted). **One toggle** — the "Incoming from" / "Hear on" pickers are gone, and no BlackHole
+  or manual routing is required. macOS **14.4+** (the whole engine is `@available`-gated so the
+  `.macOS(.v13)` package still builds).
+- **Realtime safety (the crux):** the tap IOProc (producer) and the `AVAudioSourceNode` render
+  (consumer) are BOTH realtime threads. Bridged them with a NEW lock-free C11-atomics SPSC float ring
+  (`Sources/CTapRing/tap_ring.{c,h}` + `TapAudioRing` wrapper) modeled on the driver's tested
+  `nn_ring` acquire/release discipline — NOT the `os_unfair_lock`-based `RingBuffer` (a lock between
+  two realtime threads risks priority inversion/dropouts). Both callbacks are allocation/lock/syscall-
+  free and treat the HAL input buffers as read-only (IOProc does a `vDSP` N→mono downmix into a
+  pre-allocated scratch, then writes the ring).
+- **Truthful lifecycle:** `start() -> Bool` hard-fails if our own audio process object can't be
+  resolved (a global-exclude tap around an unknown id would re-capture/mute our own playback). Start
+  order: tap → aggregate(48 kHz, `tapautostart`) → read tap ASBD once → IOProc → **playback first** →
+  `AudioDeviceStart` last (mute only engages once the cleaned re-render is live). `stop()` is a single
+  idempotent teardown run on EVERY failure path — a leaked *muted* tap would mute other apps system-
+  wide. `AudioModel` keeps it as a lazy `AnyObject?` (zero cost when off) and binds the UI to a new
+  never-lying `incomingCleanupStatus` (`unavailable`/`off`/`cleaning`/`failed`).
+- **Removed:** `incomingSourceUID`/`incomingOutputDeviceID` + `mv.incomingSource*`/`mv.incomingOutput*`
+  persistence, `fetchIncomingDevices`, the monitor-list branch in `fetchOutputDevices`, the
+  `monitorOutput*`/`incomingSource*` maps, `VirtualMicRouting.isSelectableIncomingSource`/
+  `isSelectableMonitorOutput`, `DeviceInfo.hasInput`/`transportType`, and the whole
+  `IncomingCleanupTests`. Kept `mv.incomingEnabled`.
+- **Permissions:** added `NSAudioCaptureUsageDescription` to `Info.plist` (a usage string, NOT a new
+  entitlement — the two-entitlement policy holds).
+- **Tests:** new `TapAudioRingTests` (wrap/fill/drain/underflow/overflow/drop/clear) +
+  `IncomingTapLogicTests` (own-process validity, re-pin-vs-rebuild). `swift test` 223 green; debug +
+  `-c release --arch arm64` both build.
+- **Plan + review:** `docs/superpowers/specs/2026-06-16-tap-based-clean-incoming-design.md` (Codex plan
+  review APPROVED, 4 rounds). Tap/aggregate/IOProc path + TCC prompt are the manual on-device gate.
+- **Files:** `Sources/Core/AudioProcessing/{IncomingCleanupEngine,TapAudioRing,IncomingTapLogic,
+  VirtualMicRouting}.swift`, `Sources/CTapRing/*`, `Sources/Core/{AudioModel,SettingsResetPolicy}.swift`,
+  `Sources/App/{ContentView,SettingsView}.swift`, `Package.swift`, `Resources/Info.plist`, `AGENTS.md`,
+  `CONCEPTS.md`.
+
 ### 2026-06-16 — Versioned-only releases; fixed v1.3.0 description; pruned rolling builds (Valsaraj)
 - **Decision:** pushes to `main` no longer publish a release. Removed the `workflow_run` trigger from
   `release.yml` (+ the dead job `if:`). Rolling `main-<sha>` "stable" releases kept stealing GitHub's

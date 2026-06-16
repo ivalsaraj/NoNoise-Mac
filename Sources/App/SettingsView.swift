@@ -411,41 +411,44 @@ struct GeneralSettingsView: View {
             Toggle(isOn: $audioModel.incomingCleanupEnabled) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Clean the other side").font(.subheadline)
-                    Text("De-noise the guest/caller you hear. Route the call app's speaker into a loopback device (e.g. BlackHole), then pick it below.")
+                    Text("De-noise everyone you hear (guests/callers). Captures all system audio except NoNoise, cleans it, and plays to your current output — no loopback or extra setup.")
                         .font(.caption).foregroundColor(.secondary)
                 }
             }
             .toggleStyle(.switch)
+            .disabled(!audioModel.isIncomingCleanupAvailable)
 
-            if audioModel.incomingCleanupEnabled {
-                HStack(spacing: 10) {
-                    Text("Incoming from").font(.subheadline).frame(width: 110, alignment: .leading)
-                    Picker("", selection: $audioModel.incomingSourceUID) {
-                        Text("Select…").tag("")
-                        ForEach(audioModel.incomingSourceDevices) { dev in
-                            Text(dev.name).tag(audioModel.uid(forIncomingSourceID: dev.id))
-                        }
-                    }
-                    .labelsHidden().frame(maxWidth: .infinity)
-                }
-                HStack(spacing: 10) {
-                    Text("Hear on").font(.subheadline).frame(width: 110, alignment: .leading)
-                    Picker("", selection: $audioModel.incomingOutputDeviceID) {
-                        Text("Select…").tag(AudioObjectID(0))
-                        ForEach(audioModel.monitorOutputDevices) { dev in
-                            Text(dev.name).tag(dev.id)
-                        }
-                    }
-                    .labelsHidden().frame(maxWidth: .infinity)
-                }
-                if audioModel.incomingSourceDevices.isEmpty {
-                    Label("No loopback device found. Install BlackHole or Loopback and set your call app's speaker to it.",
-                          systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption).foregroundColor(.orange)
-                }
+            if let caption = incomingStatusCaption {
+                Label(caption, systemImage: incomingStatusIcon)
+                    .font(.caption).foregroundColor(incomingStatusColor)
             }
         }
         .nnCard()
+    }
+
+    /// Status line driven by the never-lying `incomingCleanupStatus` (not the raw persisted flag).
+    private var incomingStatusCaption: String? {
+        switch audioModel.incomingCleanupStatus {
+        case .unavailable: return "Requires macOS 14.4 or later"
+        case .off:         return nil
+        case .cleaning:    return "Cleaning all incoming audio"
+        case .failed:      return "Couldn’t start — allow audio capture in System Settings ▸ Privacy & Security"
+        }
+    }
+
+    private var incomingStatusIcon: String {
+        switch audioModel.incomingCleanupStatus {
+        case .cleaning:    return "checkmark.circle.fill"
+        case .failed:      return "exclamationmark.triangle.fill"
+        default:           return "info.circle"
+        }
+    }
+
+    private var incomingStatusColor: Color {
+        switch audioModel.incomingCleanupStatus {
+        case .failed: return .orange
+        default:      return .secondary
+        }
     }
 
     // MARK: Loudness (LUFS) + normalization
@@ -744,10 +747,7 @@ struct GuideView: View {
                         description: "Noise cancellation is ON by default. Toggle it any time from the menu bar. Your voice is now crystal clear!")
                 Divider()
                 StepRow(number: 5, title: "Clean the Guest (optional)",
-                        description: "To de-noise the person you HEAR: set the call app's SPEAKER/OUTPUT to a loopback device (BlackHole 2ch or Loopback). In NoNoise Mac Settings → Clean Incoming/Guest, pick that loopback as ‘Incoming from’ and your real speakers/headphones as ‘Hear on’.")
-                Divider()
-                StepRow(number: 6, title: "Still Want to Hear Raw Audio?",
-                        description: "Routing the call app into a loopback means its sound no longer reaches your speakers directly. NoNoise Mac re-plays the CLEANED audio to your chosen output, so you still hear the call — just de-noised. For raw monitoring too, use a macOS Multi-Output Device that includes both the loopback and your speakers.")
+                        description: "To de-noise the people you HEAR, turn on Clean Incoming / Guest in Settings. NoNoise captures all system audio except itself, cleans it, and re-plays it to your current output automatically — no loopback or routing needed (requires macOS 14.4+).")
 
                 HStack {
                     Spacer()
