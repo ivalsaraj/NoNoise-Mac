@@ -29,15 +29,11 @@
   <br /><br />
 
   <sub>Works with</sub><br />
-  <img src="https://cdn.simpleicons.org/slack/4A154B" width="22" height="22" alt="Slack" title="Slack" />
-  &nbsp;
-  <img src="https://cdn.simpleicons.org/googlemeet/00897B" width="22" height="22" alt="Google Meet" title="Google Meet" />
-  &nbsp;
-  <img src="https://cdn.simpleicons.org/zoom/2D8CFF" width="22" height="22" alt="Zoom" title="Zoom" />
-  &nbsp;
-  <img src="https://cdn.simpleicons.org/discord/5865F2" width="22" height="22" alt="Discord" title="Discord" />
-  &nbsp;
-  <img src="https://cdn.simpleicons.org/obsstudio/302E31" width="22" height="22" alt="OBS Studio" title="OBS Studio" />
+  <a href="#app-by-app-microphone-setup"><img src="https://img.shields.io/badge/Slack-4A154B?style=flat-square&logo=slack&logoColor=white" alt="Slack" /></a>
+  <a href="#app-by-app-microphone-setup"><img src="https://img.shields.io/badge/Google%20Meet-00897B?style=flat-square&logo=googlemeet&logoColor=white" alt="Google Meet" /></a>
+  <a href="#app-by-app-microphone-setup"><img src="https://img.shields.io/badge/Zoom-2D8CFF?style=flat-square&logo=zoom&logoColor=white" alt="Zoom" /></a>
+  <a href="#app-by-app-microphone-setup"><img src="https://img.shields.io/badge/Discord-5865F2?style=flat-square&logo=discord&logoColor=white" alt="Discord" /></a>
+  <a href="#app-by-app-microphone-setup"><img src="https://img.shields.io/badge/OBS%20Studio-302E31?style=flat-square&logo=obsstudio&logoColor=white" alt="OBS Studio" /></a>
 
 </div>
 
@@ -243,16 +239,16 @@ Installing restarts `coreaudiod`, so **all** audio drops for ~3 s. Then:
 
 #### App-by-app microphone setup
 
-<img src="https://cdn.simpleicons.org/slack/4A154B" width="16" height="16" alt="Slack" /> **Slack**
+![Slack](https://img.shields.io/badge/Slack-4A154B?style=flat-square&logo=slack&logoColor=white)
 1. Click your **profile picture** in the bottom-left sidebar.
 2. Go to **Preferences → Audio & Video**.
 3. Under **Microphone**, select **NoNoise Mic Virtual**.
 
-<img src="https://cdn.simpleicons.org/googlemeet/00897B" width="16" height="16" alt="Google Meet" /> **Google Meet**
+![Google Meet](https://img.shields.io/badge/Google%20Meet-00897B?style=flat-square&logo=googlemeet&logoColor=white)
 1. Before or during a call, click the **⋮ More options** menu → **Settings**.
 2. Under **Audio**, set **Microphone** to **NoNoise Mic Virtual**.
 
-<img src="https://cdn.simpleicons.org/zoom/2D8CFF" width="16" height="16" alt="Zoom" /> **Zoom** / <img src="https://cdn.simpleicons.org/discord/5865F2" width="16" height="16" alt="Discord" /> **Discord** / <img src="https://cdn.simpleicons.org/obsstudio/302E31" width="16" height="16" alt="OBS" /> **OBS** — each has an **Audio** or **Sound Settings** page; set **Microphone** to **NoNoise Mic Virtual** there.
+![Zoom](https://img.shields.io/badge/Zoom-2D8CFF?style=flat-square&logo=zoom&logoColor=white) / ![Discord](https://img.shields.io/badge/Discord-5865F2?style=flat-square&logo=discord&logoColor=white) / ![OBS](https://img.shields.io/badge/OBS%20Studio-302E31?style=flat-square&logo=obsstudio&logoColor=white) — each has an **Audio** or **Sound Settings** page; set **Microphone** to **NoNoise Mic Virtual** there.
 
 > ⚠️ **Do NOT change the microphone in macOS System Settings → Sound.**
 > Setting "NoNoise Mic" as your system-default input causes your Mac to route audio into itself —
