@@ -204,10 +204,15 @@ jobs:
 
           # generate_appcast reads the (release.sh-stamped) Info.plist inside the zip for the version
           # fields and signs the archive; --download-url-prefix sets the enclosure to this release's asset.
+          # A .md file with the same basename as the zip is picked up automatically as release notes
+          # and embedded as CDATA in the appcast, so Sparkle shows them in the update prompt.
           mkdir -p sparkle-feed
           cp "$ZIP" sparkle-feed/
+          NOTES_BASENAME="$(basename "$ZIP" .app.zip)"
+          cp /tmp/release-notes.md "sparkle-feed/${NOTES_BASENAME}.md"
           "$GEN" --ed-key-file "$KEYFILE" \
                  --download-url-prefix "https://github.com/ivalsaraj/NoNoise-Mac/releases/download/${TAG}/" \
+                 --embed-release-notes \
                  sparkle-feed/
           APPCAST="sparkle-feed/appcast.xml"
           [ -f "$APPCAST" ] || { echo "appcast.xml was not generated"; exit 1; }
