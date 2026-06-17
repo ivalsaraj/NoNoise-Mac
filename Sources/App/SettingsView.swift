@@ -504,7 +504,7 @@ struct GeneralSettingsView: View {
     private var footer: some View {
         HStack(spacing: 6) {
             Image(systemName: "info.circle").foregroundColor(.secondary)
-            Text("NoNoise Mac v1.0.0 • Built with DeepFilterNet")
+            Text("NoNoise Mac v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?") • Built with DeepFilterNet")
                 .font(.caption2)
                 .foregroundColor(.secondary)
             Spacer()
