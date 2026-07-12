@@ -12,11 +12,14 @@ The Launch at Startup control remains in the General tab near the top, before th
 but has two visual states:
 
 - **Needs attention:** `.notRegistered`, `.requiresApproval`, `.notFound`, or an error shows the
-  existing full-width card. The card includes the title `Launch at Startup (Recommended)`, its
-  explanatory subtitle, the toggle, and any status/error guidance and recovery button.
+  existing full-width card. The card includes the title `Launch at Startup`, a visually secondary
+  `Recommended` badge, its explanatory subtitle, the toggle, and one deduplicated status/error
+  guidance block. `Open Login Items` is shown only for `.requiresApproval`; `.notFound` explains
+  that the installed bundled app must be launched and does not show a Login Items recovery button.
 - **Enabled:** `.enabled` shows a full-width compact row in the same location. It retains the title,
-  `Recommended` label, and toggle, but removes the explanatory subtitle, extra card padding, and
-  status guidance so it takes minimal vertical space.
+  the same visually secondary `Recommended` badge, and toggle, but removes the explanatory
+  subtitle, extra card padding, and status guidance so it takes minimal vertical space. Its
+  accessibility label remains `Launch at Startup, recommended`.
 
 Both states stretch to the settings content width with a leading-aligned frame. The surrounding
 General tab stack also stretches to the available width so the control does not shrink to its
@@ -30,14 +33,23 @@ content size.
   error message.
 - Any approval, bundled-app, or registration error keeps the expanded card visible so the user can
   understand and recover from it.
-- Existing refresh-on-settings-open behavior remains unchanged.
+- Existing refresh-on-settings-open behavior remains, and the manager performs a one-shot refresh
+  when the Settings panel regains key focus after the user returns from Login Items. Do not add a
+  polling timer.
+- External refresh clears an obsolete prior operation error once the system reports a healthy
+  state. A failed `setEnabled` operation still preserves its error until the next explicit user
+  action or successful refresh.
 - The startup setting does not move into `AudioModel`, Voice Profiles, or the audio reset list.
 
 ## Implementation surface
 
-- Modify `Sources/App/SettingsView.swift` only unless compilation requires initializer plumbing.
-- Keep the existing `LaunchAtLoginManager` API and Service Management behavior unchanged.
+- Modify `Sources/App/SettingsView.swift` and, if needed for refresh/error semantics,
+  `Sources/App/LaunchAtLoginManager.swift` and the existing Settings window lifecycle wiring.
+- Keep the existing Service Management source of truth and app-lifetime ownership unchanged.
 - Reuse the existing settings card styling; do not introduce a new dependency or settings section.
+- Do not reorder, wrap, or otherwise alter the existing Noise Suppression, Input Volume, Voice
+  Profiles, Output Gain, Incoming Cleanup, or Loudness cards. The enabled state is one compact toggle
+  row; the expanded state contains one guidance block and does not duplicate error/status actions.
 
 ## Verification
 
@@ -46,3 +58,7 @@ content size.
 - Run `swift test` for the full suite.
 - Confirm the settings stack and both Launch at Startup states use the full available width.
 - Confirm the disabled/approval/error state remains prominent and the enabled state is compact.
+- Confirm returning from Login Items updates the visible state without reopening Settings.
+- Confirm a stale registration error disappears after a successful external refresh.
+- Confirm `.notFound` has no misleading Login Items button and the existing audio-card order is
+  unchanged.
