@@ -830,25 +830,35 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         engine.stop()
         engine.reset()
         
-        // Output Device
-        if selectedOutputDeviceID != 0 {
-             var deviceID = selectedOutputDeviceID
-             let size = UInt32(MemoryLayout<AudioObjectID>.size)
-             let status = AudioUnitSetProperty(outputNode.audioUnit!,
-                                               kAudioOutputUnitProperty_CurrentDevice,
-                                               kAudioUnitScope_Global,
-                                               0,
-                                               &deviceID,
-                                               size)
-             guard status == noErr else {
-                 errorMessage = "Could not route audio to NoNoise Mic. Restart NoNoise or reconnect the audio device."
-                 return
-             }
-             
-             // Update Name
-             if let dev = outputDevices.first(where: { $0.id == selectedOutputDeviceID }) {
-                 DispatchQueue.main.async { self.activeOutputDeviceName = dev.name }
-             }
+        // Bind to the virtual sink BEFORE starting, and NEVER start unpinned: an AVAudioEngine with
+        // no CurrentDevice binds to the SYSTEM DEFAULT OUTPUT, which plays the cleaned voice into the
+        // user's speakers/headphones while "NoNoise Mic" serves silence. `selectedOutputDeviceID` is
+        // published from a DEFERRED main-queue block in `fetchOutputDevices()`, so on the `init()`
+        // call it is still 0 — resolve the hidden engine by UID to cover that window.
+        guard let routeDeviceID = VirtualMicRouting.playbackRouteID(
+            selected: selectedOutputDeviceID,
+            resolvedEngine: deviceID(forUID: VirtualMicRouting.engineDeviceUID)
+        ) else {
+            errorMessage = "No NoNoise Mic sink found. Install the NoNoise Mic driver so other apps can receive cleaned audio."
+            return
+        }
+
+        var currentDevice = routeDeviceID
+        let size = UInt32(MemoryLayout<AudioObjectID>.size)
+        let status = AudioUnitSetProperty(outputNode.audioUnit!,
+                                          kAudioOutputUnitProperty_CurrentDevice,
+                                          kAudioUnitScope_Global,
+                                          0,
+                                          &currentDevice,
+                                          size)
+        guard status == noErr else {
+            errorMessage = "Could not route audio to NoNoise Mic. Restart NoNoise or reconnect the audio device."
+            return
+        }
+
+        // Update Name
+        if let dev = outputDevices.first(where: { $0.id == routeDeviceID }) {
+            DispatchQueue.main.async { self.activeOutputDeviceName = dev.name }
         }
 
         // Attach Source

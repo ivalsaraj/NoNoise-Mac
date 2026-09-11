@@ -57,6 +57,21 @@ public enum VirtualMicRouting {
         devices.filter(isSelectableOutput)
     }
 
+    /// The device the playback engine must bind to, or `nil` meaning **do not start the engine**.
+    ///
+    /// `selected` is the published `AudioModel.selectedOutputDeviceID`, which `fetchOutputDevices()`
+    /// assigns from a DEFERRED main-queue block — so on the first call (from `init()`) it is still 0.
+    /// `resolvedEngine` is the hidden sink translated synchronously by UID, which covers that window.
+    ///
+    /// Starting unpinned is never acceptable: an `AVAudioEngine` with no `CurrentDevice` binds to the
+    /// SYSTEM DEFAULT OUTPUT, so the cleaned voice plays into the user's speakers/headphones while
+    /// "NoNoise Mic" serves silence. See `docs/knowledge/critical-patterns.md`.
+    public static func playbackRouteID(selected: UInt32, resolvedEngine: UInt32) -> UInt32? {
+        if selected != 0 { return selected }
+        if resolvedEngine != 0 { return resolvedEngine }
+        return nil
+    }
+
     public static func shouldRepinPlaybackAfterHardwareRefresh(
         preferredRouteUID: String?,
         previousOutputDeviceID: UInt32,

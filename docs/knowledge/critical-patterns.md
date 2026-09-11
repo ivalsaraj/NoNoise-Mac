@@ -13,6 +13,29 @@ hard rules; the full rationale is in `AGENTS.md`.
   (`enhanced[[...] as [NSNumber]].floatValue`). Buffer pointers are only safe for **input**
   arrays we allocate and fill ourselves.
 
+## [PATTERN] The playback engine must NEVER start unpinned (it binds to the default output)
+- **Source:** 2026-09-11 — user report: "NoNoise Mic works in Slack/Wispr Flow, then I connected my
+  JBL earphones and it stopped".
+- **Where:** `AudioModel.setupPlaybackEngine()` / `fetchOutputDevices()`.
+- **Symptom:** The consumer app's mic meter is **flat (digital silence)** while NoNoise's own input
+  meter still shows voice — so capture and DSP look healthy and the driver takes the blame. The
+  cleaned voice is meanwhile played aloud into the user's headphones.
+- **Root cause:** `init()` calls `setupPlaybackEngine()` *before* `fetchOutputDevices()`'s DEFERRED
+  main-queue block publishes `selectedOutputDeviceID`, so it was still `0`. The old code only pinned
+  `kAudioOutputUnitProperty_CurrentDevice` `if selectedOutputDeviceID != 0` and otherwise started
+  anyway — an `AVAudioEngine` with no CurrentDevice binds to the **system default output**. The later
+  re-pin then failed on the already-started AUHAL and hit the early `return`, stranding the engine
+  on that physical device for the process lifetime.
+- **Why Bluetooth exposed it:** the re-pin only fails when the bound device cannot run the canonical
+  48 kHz (`JBL LIVE PRO 2 TWS` offers **16000/44100 only**). Built-in speakers and HDMI are 48 kHz,
+  so the bug stayed invisible for every non-Bluetooth default output.
+- ❌ **WRONG:** `if selectedOutputDeviceID != 0 { pin }` then attach/connect/start regardless.
+- ✅ **CORRECT:** Resolve the route synchronously (`VirtualMicRouting.playbackRouteID(selected:resolvedEngine:)`,
+  falling back to a UID translate of the hidden engine) and **`guard` — do not start at all** when it
+  is `nil`. Rendering the outgoing mic path to a physical output is never a valid state.
+- **Regression test:** `VirtualMicRoutingTests.testPlaybackRouteIsNilWhenNoVirtualSinkResolves`
+  (+ the two sibling route cases).
+
 ## [PATTERN] No spectral compression exponent; do not de-normalize the output
 - **Where:** DFN feature pipeline + ISTFT in `DeepFilterNetDSP`.
 - **Symptom:** Muffled, dull voice; attenuated highs.

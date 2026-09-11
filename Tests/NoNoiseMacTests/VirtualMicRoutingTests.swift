@@ -66,4 +66,23 @@ final class VirtualMicRoutingTests: XCTestCase {
             resolvedOutputDeviceID: 12
         ))
     }
+
+    // MARK: - Playback route resolution (the engine must NEVER bind to a physical output)
+
+    func testPlaybackRouteUsesPublishedSelectionWhenAvailable() {
+        XCTAssertEqual(VirtualMicRouting.playbackRouteID(selected: 75, resolvedEngine: 70), 75)
+    }
+
+    func testPlaybackRouteFallsBackToResolvedEngineBeforeSelectionIsPublished() {
+        // `init()` calls setupPlaybackEngine() before fetchOutputDevices()'s DEFERRED main-queue
+        // block publishes the selection, so `selected` is still 0 on that first call.
+        XCTAssertEqual(VirtualMicRouting.playbackRouteID(selected: 0, resolvedEngine: 70), 70)
+    }
+
+    func testPlaybackRouteIsNilWhenNoVirtualSinkResolves() {
+        // nil means DO NOT START the engine. An unpinned AVAudioEngine binds to the SYSTEM DEFAULT
+        // OUTPUT — it played the cleaned voice into the user's Bluetooth headphones while
+        // "NoNoise Mic" served digital silence (2026-09-11 regression).
+        XCTAssertNil(VirtualMicRouting.playbackRouteID(selected: 0, resolvedEngine: 0))
+    }
 }
