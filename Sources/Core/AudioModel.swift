@@ -835,8 +835,12 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         // user's speakers/headphones while "NoNoise Mic" serves silence. `selectedOutputDeviceID` is
         // published from a DEFERRED main-queue block in `fetchOutputDevices()`, so on the `init()`
         // call it is still 0 — resolve the hidden engine by UID to cover that window.
+        // A nonzero selection is NOT self-certifying: the popover's fallback picker and
+        // `NoNoiseMacCLI --out` both write it from a list that contains physical outputs.
+        let selectedInfo = selectedOutputDeviceID != 0 ? deviceInfo(for: selectedOutputDeviceID) : nil
         guard let routeDeviceID = VirtualMicRouting.playbackRouteID(
             selected: selectedOutputDeviceID,
+            selectedIsApprovedSink: selectedInfo.map(VirtualMicRouting.isApprovedRouteTarget) ?? false,
             resolvedEngine: deviceID(forUID: VirtualMicRouting.engineDeviceUID)
         ) else {
             errorMessage = "No NoNoise Mic sink found. Install the NoNoise Mic driver so other apps can receive cleaned audio."
@@ -870,6 +874,7 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         
         do {
             try engine.start()
+            errorMessage = nil   // a later route (e.g. the deferred BlackHole fallback) clears the earlier warning
         } catch {
             print("Engine Error: \(error)")
         }

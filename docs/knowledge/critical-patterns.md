@@ -30,9 +30,12 @@ hard rules; the full rationale is in `AGENTS.md`.
   48 kHz (`JBL LIVE PRO 2 TWS` offers **16000/44100 only**). Built-in speakers and HDMI are 48 kHz,
   so the bug stayed invisible for every non-Bluetooth default output.
 - ❌ **WRONG:** `if selectedOutputDeviceID != 0 { pin }` then attach/connect/start regardless.
-- ✅ **CORRECT:** Resolve the route synchronously (`VirtualMicRouting.playbackRouteID(selected:resolvedEngine:)`,
-  falling back to a UID translate of the hidden engine) and **`guard` — do not start at all** when it
-  is `nil`. Rendering the outgoing mic path to a physical output is never a valid state.
+- ✅ **CORRECT:** Resolve the route synchronously
+  (`VirtualMicRouting.playbackRouteID(selected:selectedIsApprovedSink:resolvedEngine:)`, falling back to a
+  UID translate of the hidden engine) and **`guard` — do not start at all** when it is `nil`. Rendering
+  the outgoing mic path to a physical output is never a valid state. A nonzero selection is gated by
+  `isApprovedRouteTarget` (requires `hasOutput` + the engine's EXACT UID) because the popover's fallback
+  picker and `NoNoiseMacCLI --out` both write `selectedOutputDeviceID` from a list of physical outputs.
 - **Regression test:** `VirtualMicRoutingTests.testPlaybackRouteIsNilWhenNoVirtualSinkResolves`
   (+ the two sibling route cases).
 

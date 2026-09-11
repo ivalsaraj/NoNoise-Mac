@@ -8,9 +8,11 @@ Chronological log of notable changes. Newest on top.
 - **Root cause:** `setupPlaybackEngine()` started the engine unpinned when `selectedOutputDeviceID`
   had not been published yet, binding the AUHAL to the system default output. See
   `critical-patterns.md` → "The playback engine must NEVER start unpinned".
-- **Fix:** new pure `VirtualMicRouting.playbackRouteID(selected:resolvedEngine:)` resolves the sink
-  synchronously (published selection → UID translate of the hidden engine → `nil`), and
-  `setupPlaybackEngine()` now `guard`s on it instead of starting without a CurrentDevice.
+- **Fix:** new pure `VirtualMicRouting.playbackRouteID(selected:selectedIsApprovedSink:resolvedEngine:)`
+  resolves the sink synchronously (approved selection → UID translate of the hidden engine → `nil`), and
+  `setupPlaybackEngine()` now `guard`s on it instead of starting without a CurrentDevice. A nonzero
+  selection is validated by `isApprovedRouteTarget` (the popover picker and `NoNoiseMacCLI --out` can
+  both name a physical output).
 - **Verification:** reproduced deterministically on-device (engine device not running, consumer
   `maxPeak = 0.0`); after the fix the same launch scenario shows the hidden engine running and
   `maxPeak = 0.075`. 234 unit tests green.

@@ -57,17 +57,38 @@ public enum VirtualMicRouting {
         devices.filter(isSelectableOutput)
     }
 
+    /// A device the outgoing mic path may render into: our hidden engine, or a known virtual sink.
+    /// A physical output is NEVER acceptable — it plays the user's own voice aloud AND leaves
+    /// "NoNoise Mic" serving silence.
+    ///
+    /// Deliberately STRICTER than `isNoNoiseEngine`, which also matches by display name. That
+    /// looseness is fail-SAFE for picker filtering (over-excluding only hides a device) but
+    /// fail-OPEN here (over-including routes the mic to speakers), so the engine is accepted on its
+    /// exact UID only. BlackHole is still matched by name — its UID varies by build and channel
+    /// count, so the name is the only stable signal; `hasOutput` bounds that.
+    public static func isApprovedRouteTarget(_ d: DeviceInfo) -> Bool {
+        guard d.hasOutput else { return false }
+        if d.uid == engineDeviceUID { return true }
+        return fallbackVirtualSinks.contains(where: { d.name.contains($0) })
+    }
+
     /// The device the playback engine must bind to, or `nil` meaning **do not start the engine**.
     ///
     /// `selected` is the published `AudioModel.selectedOutputDeviceID`, which `fetchOutputDevices()`
     /// assigns from a DEFERRED main-queue block — so on the first call (from `init()`) it is still 0.
     /// `resolvedEngine` is the hidden sink translated synchronously by UID, which covers that window.
     ///
-    /// Starting unpinned is never acceptable: an `AVAudioEngine` with no `CurrentDevice` binds to the
-    /// SYSTEM DEFAULT OUTPUT, so the cleaned voice plays into the user's speakers/headphones while
-    /// "NoNoise Mic" serves silence. See `docs/knowledge/critical-patterns.md`.
-    public static func playbackRouteID(selected: UInt32, resolvedEngine: UInt32) -> UInt32? {
-        if selected != 0 { return selected }
+    /// `selectedIsApprovedSink` gates the selection through `isApprovedRouteTarget`: the popover's
+    /// fallback picker (`ContentView`, driver-not-installed branch) and `NoNoiseMacCLI --out` both
+    /// write `selectedOutputDeviceID` from a list that contains physical outputs, so a nonzero
+    /// selection is NOT self-certifying.
+    ///
+    /// Starting unpinned is never acceptable either: an `AVAudioEngine` with no `CurrentDevice` binds
+    /// to the SYSTEM DEFAULT OUTPUT. See `docs/knowledge/critical-patterns.md`.
+    public static func playbackRouteID(selected: UInt32,
+                                       selectedIsApprovedSink: Bool,
+                                       resolvedEngine: UInt32) -> UInt32? {
+        if selected != 0 && selectedIsApprovedSink { return selected }
         if resolvedEngine != 0 { return resolvedEngine }
         return nil
     }

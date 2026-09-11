@@ -69,20 +69,62 @@ final class VirtualMicRoutingTests: XCTestCase {
 
     // MARK: - Playback route resolution (the engine must NEVER bind to a physical output)
 
-    func testPlaybackRouteUsesPublishedSelectionWhenAvailable() {
-        XCTAssertEqual(VirtualMicRouting.playbackRouteID(selected: 75, resolvedEngine: 70), 75)
+    func testPlaybackRouteUsesPublishedSelectionWhenItIsAnApprovedSink() {
+        XCTAssertEqual(VirtualMicRouting.playbackRouteID(selected: 75, selectedIsApprovedSink: true, resolvedEngine: 70), 75)
     }
 
     func testPlaybackRouteFallsBackToResolvedEngineBeforeSelectionIsPublished() {
         // `init()` calls setupPlaybackEngine() before fetchOutputDevices()'s DEFERRED main-queue
         // block publishes the selection, so `selected` is still 0 on that first call.
-        XCTAssertEqual(VirtualMicRouting.playbackRouteID(selected: 0, resolvedEngine: 70), 70)
+        XCTAssertEqual(VirtualMicRouting.playbackRouteID(selected: 0, selectedIsApprovedSink: false, resolvedEngine: 70), 70)
+    }
+
+    func testPlaybackRouteRejectsPhysicalSelectionAndFallsBackToEngine() {
+        // The popover picker (driver-not-installed branch) and `NoNoiseMacCLI --out` can both put a
+        // PHYSICAL output in `selectedOutputDeviceID`. Binding to it would play the user's voice
+        // aloud and leave "NoNoise Mic" serving silence.
+        XCTAssertEqual(VirtualMicRouting.playbackRouteID(selected: 42, selectedIsApprovedSink: false, resolvedEngine: 70), 70)
+    }
+
+    func testPlaybackRouteIsNilWhenPhysicalSelectedAndNoVirtualSinkExists() {
+        XCTAssertNil(VirtualMicRouting.playbackRouteID(selected: 42, selectedIsApprovedSink: false, resolvedEngine: 0))
     }
 
     func testPlaybackRouteIsNilWhenNoVirtualSinkResolves() {
         // nil means DO NOT START the engine. An unpinned AVAudioEngine binds to the SYSTEM DEFAULT
         // OUTPUT — it played the cleaned voice into the user's Bluetooth headphones while
         // "NoNoise Mic" served digital silence (2026-09-11 regression).
-        XCTAssertNil(VirtualMicRouting.playbackRouteID(selected: 0, resolvedEngine: 0))
+        XCTAssertNil(VirtualMicRouting.playbackRouteID(selected: 0, selectedIsApprovedSink: false, resolvedEngine: 0))
+    }
+
+    // MARK: - Approved route targets
+
+    func testEngineAndBlackHoleAreApprovedRouteTargets() {
+        XCTAssertTrue(VirtualMicRouting.isApprovedRouteTarget(
+            dev(VirtualMicRouting.engineDeviceName, uid: VirtualMicRouting.engineDeviceUID, hidden: true)))
+        XCTAssertTrue(VirtualMicRouting.isApprovedRouteTarget(dev("BlackHole 2ch", uid: "BH-uid")))
+    }
+
+    func testPhysicalOutputsAreNeverApprovedRouteTargets() {
+        XCTAssertFalse(VirtualMicRouting.isApprovedRouteTarget(dev("MacBook Air Speakers")))
+        XCTAssertFalse(VirtualMicRouting.isApprovedRouteTarget(dev("JBL LIVE PRO 2 TWS")))
+        XCTAssertFalse(VirtualMicRouting.isApprovedRouteTarget(dev("LG SMART WQHD")))
+    }
+
+    func testDeviceNamedLikeTheEngineIsRejectedWithoutTheExactUID() {
+        // `isNoNoiseEngine` also matches by display name — fail-SAFE for picker filtering, but
+        // fail-OPEN for route approval. Approval must require the exact UID.
+        let impostor = VirtualMicRouting.DeviceInfo(uid: "SomePhysicalDevice-uid",
+                                                    name: VirtualMicRouting.engineDeviceName,
+                                                    isHidden: false, hasOutput: true)
+        XCTAssertTrue(VirtualMicRouting.isNoNoiseEngine(impostor))          // picker still hides it
+        XCTAssertFalse(VirtualMicRouting.isApprovedRouteTarget(impostor))   // routing must refuse it
+    }
+
+    func testInputOnlyDeviceIsNeverAnApprovedRouteTarget() {
+        let inputOnly = VirtualMicRouting.DeviceInfo(uid: VirtualMicRouting.engineDeviceUID,
+                                                     name: VirtualMicRouting.engineDeviceName,
+                                                     isHidden: true, hasOutput: false)
+        XCTAssertFalse(VirtualMicRouting.isApprovedRouteTarget(inputOnly))
     }
 }
