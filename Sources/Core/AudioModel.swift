@@ -79,6 +79,7 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         mScope: kAudioObjectPropertyScopeGlobal,
         mElement: kAudioObjectPropertyElementMain)
     private var deviceRefreshWorkItem: DispatchWorkItem?
+    private var playbackConfigObserver: NSObjectProtocol?
     private var onDemandMode: Bool { micDeviceID != 0 }
     private var shouldCapture: Bool { !onDemandMode || virtualMicInUse }
     
@@ -357,6 +358,7 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         // on-demand mode we must NOT start the real-mic capture until an app uses "NoNoise Mic".
         micDeviceID = deviceID(forUID: VirtualMicRouting.visibleDeviceUID)
         setupCaptureSession()
+        installPlaybackConfigChangeObserver()
         setupPlaybackEngine()
         resolveVirtualMicLifecycle()   // arm the in-use listener + sync initial state
         installHardwareDeviceListener()
@@ -371,6 +373,9 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         controlPumpTimer?.invalidate()
         uiPublishTimer?.invalidate()
         deviceRefreshWorkItem?.cancel()
+        if let obs = playbackConfigObserver {
+            NotificationCenter.default.removeObserver(obs)
+        }
         if let block = hardwareDevicesListener {
             AudioObjectRemovePropertyListenerBlock(AudioObjectID(kAudioObjectSystemObject),
                                                    &hardwareDevicesAddr,
@@ -847,17 +852,35 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
             return
         }
 
-        var currentDevice = routeDeviceID
-        let size = UInt32(MemoryLayout<AudioObjectID>.size)
-        let status = AudioUnitSetProperty(outputNode.audioUnit!,
-                                          kAudioOutputUnitProperty_CurrentDevice,
-                                          kAudioUnitScope_Global,
-                                          0,
-                                          &currentDevice,
-                                          size)
-        guard status == noErr else {
+        guard let au = outputNode.audioUnit else {
             errorMessage = "Could not route audio to NoNoise Mic. Restart NoNoise or reconnect the audio device."
             return
+        }
+        let size = UInt32(MemoryLayout<AudioObjectID>.size)
+        var existingDevice: AudioObjectID = 0
+        var existingSize = size
+        let getStatus = AudioUnitGetProperty(au,
+                                             kAudioOutputUnitProperty_CurrentDevice,
+                                             kAudioUnitScope_Global,
+                                             0,
+                                             &existingDevice,
+                                             &existingSize)
+        // Only write kAudioOutputUnitProperty_CurrentDevice when not already pinned to routeDeviceID:
+        // changing the AUHAL device across sample rates (e.g. 16 kHz Bluetooth HFP/SCO -> 48 kHz
+        // NoNoise Mic Engine) triggers an asynchronous AVAudioEngineConfigurationChange notification
+        // that stops the engine. Skipping the redundant write on the recovery pass breaks the cycle.
+        if getStatus != noErr || existingDevice != routeDeviceID {
+            var currentDevice = routeDeviceID
+            let status = AudioUnitSetProperty(au,
+                                              kAudioOutputUnitProperty_CurrentDevice,
+                                              kAudioUnitScope_Global,
+                                              0,
+                                              &currentDevice,
+                                              size)
+            guard status == noErr else {
+                errorMessage = "Could not route audio to NoNoise Mic. Restart NoNoise or reconnect the audio device."
+                return
+            }
         }
 
         // Update Name
@@ -958,6 +981,9 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         if shouldCapture {
             DispatchQueue.global(qos: .userInitiated).async {
                 self.captureSession.startRunning()
+                DispatchQueue.main.async {
+                    self.ensurePlaybackEngineRunningAndPinned()
+                }
             }
         }
     }
@@ -1028,9 +1054,51 @@ public class AudioModel: NSObject, ObservableObject, AVCaptureAudioDataOutputSam
         // rebuild the tap on every hardware change.
     }
 
+    private func installPlaybackConfigChangeObserver() {
+        guard playbackConfigObserver == nil else { return }
+        playbackConfigObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange,
+            object: engine,
+            queue: .main
+        ) { [weak self] _ in
+            self?.ensurePlaybackEngineRunningAndPinned()
+        }
+    }
+
+    /// Re-pin and restart the playback engine if AVAudioEngine stopped it (e.g. after the async
+    /// stream-format change from a 16 kHz Bluetooth default device to the 48 kHz NoNoise Mic Engine,
+    /// or when DefaultDeviceAggregate rebinds the AUHAL during Bluetooth HFP/SCO profile switches).
+    private func ensurePlaybackEngineRunningAndPinned() {
+        let selectedInfo = selectedOutputDeviceID != 0 ? deviceInfo(for: selectedOutputDeviceID) : nil
+        let targetDeviceID = VirtualMicRouting.playbackRouteID(
+            selected: selectedOutputDeviceID,
+            selectedIsApprovedSink: selectedInfo.map(VirtualMicRouting.isApprovedRouteTarget) ?? false,
+            resolvedEngine: deviceID(forUID: VirtualMicRouting.engineDeviceUID)
+        )
+        var currentDevice: AudioObjectID = 0
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        if let au = outputNode.audioUnit {
+            _ = AudioUnitGetProperty(au,
+                                     kAudioOutputUnitProperty_CurrentDevice,
+                                     kAudioUnitScope_Global,
+                                     0,
+                                     &currentDevice,
+                                     &size)
+        }
+        if !engine.isRunning || (targetDeviceID != nil && currentDevice != targetDeviceID) {
+            setupPlaybackEngine()
+        }
+    }
+
     private func startCapture() {
+        ensurePlaybackEngineRunningAndPinned()
         guard !captureSession.isRunning else { return }
-        DispatchQueue.global(qos: .userInitiated).async { self.captureSession.startRunning() }
+        DispatchQueue.global(qos: .userInitiated).async {
+            self.captureSession.startRunning()
+            DispatchQueue.main.async {
+                self.ensurePlaybackEngineRunningAndPinned()
+            }
+        }
     }
 
     private func stopCapture() {
